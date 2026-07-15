@@ -63,7 +63,7 @@ resource "null_resource" "registry_connected" {
 # Resources are fixed at snapshot registration (you cannot pass --cpu/--memory when creating
 # from a snapshot on Daytona), so one image yields two pre-sized snapshots.
 # This wraps the idempotent infra/snapshots/register-snapshot.sh script.
-# Ref: register-snapshot.sh for implementation details; config/runners.toml for sizes.
+# Ref: register-snapshot.sh for implementation details; the public example profile for sizes.
 
 resource "null_resource" "snapshots_registered" {
   provisioner "local-exec" {

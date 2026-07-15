@@ -75,8 +75,7 @@ pushes those problems to the edges:
 orchestrator/              Python demand reconciler + fleet watchdog
 runner-image/              universal GitHub Actions runner image
 runner-image/hooks/        cache restore/save hooks for job start and completion
-config/runners.toml        example runner classes and lifecycle settings
-config/fleets/             credential-free example fleet profiles
+config/fleets/             credential-free example fleet profiles and runner classes
 infra/snapshots/           GHCR registry setup and snapshot registration scripts
 infra/terraform/           runner group, cache volume, and registry IaC
 scripts/                   verification and migration helpers
@@ -133,7 +132,9 @@ generated Terraform state.
 
 ## Configuration
 
-The orchestrator reads `config/runners.toml`. The important fields are:
+Start from `config/fleets/example/runners.toml`, then keep the activated copy in
+your private operations source and point `MARSH_RUNNER_CONFIG` at that deployed
+file. The important fields are:
 
 - `[github].scope`: `organization` (the default) or `repository`.
 - Organization scope: `[github].org` and selected `runner_group` used for JIT
