@@ -13,4 +13,4 @@
 
 - [ ] No deploy
 - [ ] Staging on merge to `main`
-- [ ] Production via published immutable GitHub Release with a `v*` tag
+- [ ] Production via published immutable GitHub Release with a CalVer `20*` tag

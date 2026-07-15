@@ -308,7 +308,7 @@ ensure_label() {
 put_environment staging
 sync_deployment_policies staging branch:main
 put_environment production
-sync_deployment_policies production 'tag:v*'
+sync_deployment_policies production 'tag:20*'
 
 ensure_label type:bug d73a4a 'Reproducible defect for public intake.'
 ensure_label type:feature a2eeef 'New capability or behavior change for public intake.'
@@ -326,12 +326,12 @@ Repository bootstrap summary
 - Dependabot alerts and automated security fixes enabled.
 - Immutable GitHub Releases enabled.
 - staging environment allows deployments from main.
-- production environment allows deployments from v* tags only.
+- production environment allows deployments from CalVer 20* tags only.
 - Work item labels synchronized for bug, feature, epic, and issue intake.
 - Merge settings set to delete branches on merge and squash-only.
 
 Human-only follow-up
-- Confirm required workflow job names exist: build-test, lint, secrets-scan, sast, deps-scan, iac-scan, actions-lint.
+- Confirm required workflow job names exist: marsh-verify, build-test, lint, secrets-scan, sast, deps-scan, iac-scan, actions-lint.
 - Add environment secrets or variables such as AWS role ARNs after AWS OIDC roles exist.
 - Enable Codex automatic review or configure CLAUDE_CODE_OAUTH_TOKEN for the committed AI-review workflow.
 - Configure commit signing before applying signed-commit rulesets to active work.
