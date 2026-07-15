@@ -1,0 +1,10 @@
+[manifest]
+version = 1
+
+# This is a non-activated example profile. Keep real fleet inventory and
+# deployment-specific bindings in private operations source.
+[[fleet]]
+name = "example"
+organization = "example-org"
+profile = "config/fleets/example/runners.toml"
+installation_id_key = "installation_id_example"

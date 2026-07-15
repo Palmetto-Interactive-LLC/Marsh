@@ -1,0 +1,47 @@
+# terraform.tfvars.example
+# Copy this to terraform.tfvars and fill in values from your secret manager.
+# NEVER commit real secrets — this file is for placeholders only.
+
+# GitHub org and repos
+github_org            = "YOUR-GITHUB-ORG"
+github_org_lowercase  = "your-github-org"
+runner_group_name     = "marsh"
+runner_repos          = ["example-repo"]
+
+# Daytona
+daytona_api_base = "https://app.daytona.io/api"
+daytona_target   = "us"
+
+# Docker registry (GHCR)
+ghcr_registry_name = "ghcr-marsh"
+
+# Runner image version
+marsh_runner_image_tag = "v1"
+
+# Cache volumes (usually no override needed)
+cache_volumes = {
+  "marsh-cache-cargo"     = "cargo"
+  "marsh-cache-sccache"   = "sccache"
+  "marsh-cache-go"        = "go"
+  "marsh-cache-node"      = "npm"
+  "marsh-cache-pip"       = "pip"
+  "marsh-cache-buildx"    = "buildx"
+  "marsh-cache-toolcache" = "toolcache"
+}
+
+# REQUIRED SECRETS (inject from environment or Secret Manager, never commit)
+#
+# GitHub token (admin:org scope for creating/managing runner groups):
+#   export TF_VAR_github_token="resolved-by-your-secret-provider"
+#
+# Daytona API key:
+#   export TF_VAR_daytona_api_key="resolved-by-your-secret-provider"
+#
+# GHCR credentials (read:packages for pull, write:packages if also pushing):
+#   export TF_VAR_ghcr_user="github-username"
+#   export TF_VAR_ghcr_token="resolved-by-your-secret-provider"
+#
+# Run:
+#   terraform init
+#   terraform plan
+#   terraform apply

@@ -1,0 +1,45 @@
+# Non-activated public example. It is validated by `scripts/fleet_config.py`
+# and intentionally contains no real organization, repository, target, or
+# deployment binding.
+[github]
+org = "example-org"
+runner_group = "daytona"
+
+[daytona]
+api_base = "https://app.daytona.io/api"
+target = "example-target"
+
+[cache]
+volume = "example-marsh-cache"
+
+[[size_class]]
+name = "default"
+labels = ["self-hosted", "daytona", "marsh"]
+snapshot = "marsh-runner-default-example"
+cpu = 2
+memory_gib = 4
+disk_gib = 10
+min_idle = 0
+max = 10
+
+[[size_class]]
+name = "large"
+labels = ["self-hosted", "daytona", "marsh", "large"]
+snapshot = "marsh-runner-large-example"
+cpu = 4
+memory_gib = 8
+disk_gib = 10
+min_idle = 0
+max = 4
+
+[lifecycle]
+ephemeral = true
+auto_stop_minutes = 120
+auto_delete_interval = 0
+idle_refresh_secs = 1800
+demand_idle_secs = 300
+job_max_secs = 3600
+
+[poller]
+interval_secs = 20
+request_spacing_secs = 1

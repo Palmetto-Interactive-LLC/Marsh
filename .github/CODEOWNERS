@@ -1,0 +1,4 @@
+# Optional ownership map for downstream adopters.
+# Replace the example with a public GitHub user or team before requiring
+# CODEOWNERS review in branch protection.
+# * @example-maintainers

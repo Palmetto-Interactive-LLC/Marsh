@@ -1,0 +1,36 @@
+# Marsh fleet watchdog configuration — copy to /etc/marsh/watchdog.toml and
+# edit. See orchestrator/watchdog.py for what each check does. No secrets
+# belong in this file: instance credentials come from each env_file, and the
+# optional notify bearer token from the env var named by token_env (put it in
+# /etc/marsh/watchdog.env, 0600 — the systemd unit loads it if present).
+
+[notify]
+# Webhook that receives alerts. An ntfy topic URL works out of the box
+# (format = "ntfy" sends Title/Priority headers + text body); format = "json"
+# posts {title, message, priority} for Slack-style receivers. Empty = print only.
+url = ""
+format = "ntfy"
+token_env = "MARSH_NOTIFY_TOKEN"
+# Optional dead-man's switch (e.g. a Better Stack heartbeat): GET on every
+# all-clear pass. If the watchdog or the whole host dies, the missing
+# heartbeat is the page.
+heartbeat_url = ""
+
+[checks]
+stuck_queue_minutes = 10       # queued job with fleet labels older than this -> alert
+max_sandboxes = 0              # alert when org-labeled sandboxes exceed this (0 = skip)
+orphan_sandbox_minutes = 90    # sandbox alive longer than this -> alert (0 = skip)
+realert_minutes = 60           # re-page cadence while a finding persists
+
+[report]
+since = "-24h"                 # structured per-snapshot lifecycle sample window
+
+# One [[instance]] per orchestrator process. Single-instance deployments use
+# the stock paths below; multi-instance (one org per unit) deployments repeat
+# the block, e.g. unit = "marsh-orchestrator@yourorg.service",
+# env_file = "/etc/marsh/yourorg/orchestrator.env".
+[[instance]]
+name = "default"
+unit = "marsh-orchestrator.service"
+env_file = "/etc/marsh/orchestrator.env"
+config = "/etc/marsh/runners.toml"

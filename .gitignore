@@ -1,0 +1,60 @@
+# Secrets & local state — never commit
+*.tfvars
+!*.tfvars.example
+.terraform/
+*.tfstate
+*.tfstate.*
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build context artifacts baked into the runner image
+runner-image/*-linux-amd64
+
+# --- org template (pi-template) additions ---
+.DS_Store
+.env.*
+!.env.example
+
+# Dependencies and package managers.
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build output.
+dist/
+build/
+coverage/
+.next/
+out/
+
+# Tool caches.
+.cache/
+.pytest_cache/
+.ruff_cache/
+crash.log
+crash.*.log
+
+# Local secrets and generated scans.
+*.p12
+*.pfx
+gitleaks-report.*
+trivy-results.*
+osv-scanner-results.*
+scorecard-results.*
+
+# OS/editor.
+.idea/
+.vscode/
+*.swp
+
+# Machine-local environment files.
+.env.local
+.env.*.local
+# Keep the generic example committed.
+!.env.example
