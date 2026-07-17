@@ -132,8 +132,11 @@ class CycleTelemetryTests(unittest.TestCase):
             "disk_gib": 10,
         }
 
+        # Clock marks: jit start/end, create start/ready, runner start, busy, complete, teardown.
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0, 140.0, 145.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 108.0, 110.0, 120.0, 140.0, 145.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             orch.cycle(
                 cycle_id, size_class, GitHub("alpha"), Daytona(), 1, BusyMap(True),
@@ -154,13 +157,20 @@ class CycleTelemetryTests(unittest.TestCase):
         self.assertEqual(event["total_secs"], 40.0)
         self.assertEqual(event["allocated_secs"], 40.0)
         self.assertEqual(event["cleanup_status"], "deleted")
+        self.assertEqual(event["jit_mint_secs"], 2.0)
+        self.assertEqual(event["sandbox_create_secs"], 3.0)
+        self.assertEqual(event["runner_start_secs"], 2.0)
         self.assertEqual(event["launch_secs"], 5.0)
         self.assertEqual(event["idle_secs"], 10.0)
         self.assertEqual(event["busy_secs"], 20.0)
+        self.assertEqual(event["teardown_secs"], 5.0)
         self.assertTrue(event["job_phase_observed"])
         self.assertEqual(event["declared_resources"], {"cpu": 2, "disk_gib": 10, "memory_gib": 4})
         self.assertEqual(event["started_at"], "1970-01-01T00:01:40.000Z")
+        self.assertEqual(event["jit_started_at"], "1970-01-01T00:01:41.000Z")
+        self.assertEqual(event["jit_completed_at"], "1970-01-01T00:01:43.000Z")
         self.assertEqual(event["sandbox_started_at"], "1970-01-01T00:01:45.000Z")
+        self.assertEqual(event["sandbox_ready_at"], "1970-01-01T00:01:48.000Z")
         self.assertEqual(event["runner_command_started_at"], "1970-01-01T00:01:50.000Z")
         self.assertEqual(event["busy_at"], "1970-01-01T00:02:00.000Z")
         self.assertEqual(event["completed_at"], "1970-01-01T00:02:20.000Z")
@@ -188,7 +198,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0, 130.0, 135.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0, 130.0, 135.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             orch.cycle(
                 cycle_id, size_class, GitHub("alpha"), Daytona(), 1, BusyMap(False),
@@ -202,7 +214,11 @@ class CycleTelemetryTests(unittest.TestCase):
         self.assertEqual(event["termination_reason"], "idle_deadline")
         self.assertIsNone(event["busy_at"])
         self.assertIsNone(event["busy_secs"])
+        self.assertEqual(event["jit_mint_secs"], 2.0)
+        self.assertEqual(event["sandbox_create_secs"], 2.0)
+        self.assertEqual(event["runner_start_secs"], 3.0)
         self.assertEqual(event["idle_secs"], 20.0)
+        self.assertEqual(event["teardown_secs"], 5.0)
         self.assertEqual(event["allocated_secs"], 30.0)
         self.assertEqual(event["cleanup_status"], "deleted")
         self.assertEqual(event["declared_resources"], {})
@@ -236,7 +252,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             orch.cycle(
                 cycle_id, size_class, GitHub(), Daytona(), 1, BusyMap(False),
@@ -247,6 +265,8 @@ class CycleTelemetryTests(unittest.TestCase):
         self.assertEqual(event["cleanup_status"], "delete_failed")
         self.assertIsNone(event["allocation_completed_at"])
         self.assertIsNone(event["allocated_secs"])
+        self.assertIsNone(event["teardown_secs"])
+        self.assertEqual(event["sandbox_create_secs"], 2.0)
         with orch.REGISTRY_LOCK:
             self.assertEqual(orch.REGISTRY[cycle_id].state, "CLEANUP_PENDING")
 
@@ -276,7 +296,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0, 125.0,
+             )), \
              self.assertLogs("marsh-orch", level="WARNING") as logs:
             orch.cycle(
                 cycle_id, size_class, DeleteFailsGitHub(), Daytona(), 1, BusyMap(False),
@@ -312,7 +334,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0, 125.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0, 125.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             orch.cycle(
                 cycle_id, size_class, GitHub(), Daytona(), 1, BusyMap(True),
@@ -325,6 +349,10 @@ class CycleTelemetryTests(unittest.TestCase):
         self.assertIsNone(event["busy_at"])
         self.assertIsNone(event["busy_secs"])
         self.assertIsNone(event["idle_secs"])
+        self.assertEqual(event["jit_mint_secs"], 2.0)
+        self.assertEqual(event["sandbox_create_secs"], 2.0)
+        self.assertEqual(event["runner_start_secs"], 3.0)
+        self.assertEqual(event["teardown_secs"], 5.0)
         self.assertEqual(event["allocated_secs"], 20.0)
 
     def test_cycle_failure_record_excludes_exception_and_invalid_resource_values(self) -> None:
@@ -356,7 +384,12 @@ class CycleTelemetryTests(unittest.TestCase):
         self.assertEqual(event["outcome"], "failed")
         self.assertEqual(event["termination_reason"], "cycle_failed")
         self.assertIsNone(event["sandbox_started_at"])
+        self.assertIsNone(event["sandbox_ready_at"])
+        self.assertIsNone(event["sandbox_create_secs"])
         self.assertIsNone(event["allocated_secs"])
+        # JIT completed; create was attempted and failed before ready.
+        self.assertEqual(event["jit_mint_secs"], 0.0)
+        self.assertIsNone(event["runner_start_secs"])
         self.assertEqual(event["cleanup_status"], "create_unconfirmed")
         self.assertEqual(event["declared_resources"], {})
         self.assertNotIn("exception", event)
@@ -396,6 +429,10 @@ class CycleTelemetryTests(unittest.TestCase):
         event = telemetry_record(logs.output)
         self.assertEqual(event["cleanup_status"], "create_not_attempted")
         self.assertIsNone(event["allocated_secs"])
+        # JIT start was observed; mint raised before completion.
+        self.assertIsNotNone(event["jit_started_at"])
+        self.assertIsNone(event["jit_completed_at"])
+        self.assertIsNone(event["jit_mint_secs"])
         with orch.REGISTRY_LOCK:
             self.assertEqual(orch.REGISTRY[cycle_id].state, "CLEANUP_PENDING")
 
@@ -453,7 +490,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0, 125.0, 130.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0, 125.0, 130.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             # SIGUSR1 arrives after this runner has started; new cycles are
             # separately rejected by spawn_cycle above.
@@ -498,7 +537,9 @@ class CycleTelemetryTests(unittest.TestCase):
         }
 
         with patch.object(orch.time, "sleep", lambda seconds: None), \
-             patch.object(orch, "_cycle_now", side_effect=(105.0, 110.0, 120.0, 130.0, 140.0)), \
+             patch.object(orch, "_cycle_now", side_effect=(
+                 101.0, 103.0, 105.0, 107.0, 110.0, 120.0, 130.0, 140.0, 145.0,
+             )), \
              self.assertLogs("marsh-orch", level="INFO") as logs:
             orch.cycle(
                 cycle_id, size_class, GitHub(), Daytona(), 1, BusyMap(True),

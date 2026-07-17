@@ -64,8 +64,10 @@ pushes those problems to the edges:
 | Scheduling | GitHub owns the queue; Marsh only provisions capacity. |
 | Isolation | Every job starts in a fresh Daytona sandbox. |
 | Runner lifecycle | JIT + ephemeral runner; one job per sandbox. |
-| Scaling | Poll queued demand; enable a measured warm floor only when pickup latency requires it. |
+| Scaling | Poll queued demand; optional GitHub `workflow_job` webhooks wake the poller immediately (Depot-style). |
 | Caching | Bake stable tools into the snapshot; store mutable caches as tarballs. |
+| Pickup latency | Adaptive cycle poll (fast for ~90s after runner online), stage-level cycle telemetry. |
+| Debug | Optional `hold_on_failure_secs` keeps the Daytona sandbox for SSH after a failed job. |
 | Failure cleanup | Auto-stop, registry-aware orphan sweep, and startup reap. |
 | Multi-tenancy | Sandboxes are labeled by org; sweeps never touch another org's runners. |
 
@@ -79,8 +81,12 @@ config/fleets/             credential-free example fleet profiles and runner cla
 infra/snapshots/           GHCR registry setup and snapshot registration scripts
 infra/terraform/           runner group, cache volume, and registry IaC
 scripts/                   verification and migration helpers
-docs/                      security, release, setup, and public-release notes
+docs/                      security, release, setup, orchestrator, and public-release notes
 ```
+
+Orchestrator control loop, optional webhooks, adaptive polling, hold-on-failure,
+and cycle telemetry are documented in
+[docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md).
 
 ## Quick Start
 
@@ -143,8 +149,13 @@ file. The important fields are:
   allowlist, and `runner_group_id` used by each repository JIT request.
 - `[cache].volume`: Daytona volume mounted at `/cache`.
 - `[[size_class]]`: labels, snapshot name, resources, warm floor, and burst cap.
-- `[lifecycle]`: job deadline, idle refresh, demand idle timeout, and orphan
-  safety settings.
+- `[lifecycle]`: job deadline, idle refresh, demand idle timeout, orphan safety,
+  adaptive poll cadence (`fast_idle_poll_secs` / `busy_poll_secs`), and optional
+  `hold_on_failure_secs` for post-failure Daytona SSH.
+- `[webhook]` (optional): `listen = "127.0.0.1:8787"` and `hmac_env` naming the
+  host env var that holds the GitHub webhook HMAC secret. Point the App at
+  `/github`; verified `workflow_job` **queued** events with matching labels wake
+  the poller immediately. The poller remains the source of truth.
 
 Daytona fixes CPU, memory, and disk size at snapshot registration time. Marsh
 therefore uses one image registered as multiple pre-sized snapshots.

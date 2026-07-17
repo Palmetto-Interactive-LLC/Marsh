@@ -39,7 +39,21 @@ auto_delete_interval = 0
 idle_refresh_secs = 1800
 demand_idle_secs = 300
 job_max_secs = 3600
+# Keep a failed sandbox briefly for Daytona SSH debug (0 = off).
+hold_on_failure_secs = 0
+# Adaptive cycle poll: fast for 90s after runner online, then settle.
+idle_poll_secs = 15
+fast_idle_poll_secs = 3
+fast_idle_window_secs = 90
+busy_poll_secs = 10
 
 [poller]
 interval_secs = 20
 request_spacing_secs = 1
+
+# Optional: GitHub workflow_job webhooks wake the poller immediately.
+# Point the App webhook at your TLS endpoint → /github and set hmac_env on the host.
+# See docs/ORCHESTRATOR.md. Secret value stays in the host env, never here.
+# [webhook]
+# listen = "127.0.0.1:8787"
+# hmac_env = "MARSH_WEBHOOK_HMAC"

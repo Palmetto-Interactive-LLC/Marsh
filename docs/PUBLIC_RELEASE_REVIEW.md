@@ -43,7 +43,7 @@ Confirm all of the following before tagging:
 Use this concise record in the GitHub Release or private delivery log:
 
 ```text
-Release: 2026.7.2
+Release: 2026.7.3
 Commit: <verified-main-commit>
 Verification: <attach gitleaks, make verify, and git diff --check results>
 Public-boundary review: <pass/fail with evidence>
