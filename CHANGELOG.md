@@ -5,6 +5,25 @@ All notable changes to Marsh are documented in this file.
 The format is based on Keep a Changelog, and this project uses Calendar
 Versioning: `YYYY.M.PATCH`.
 
+## [2026.7.3] - 2026-07-17
+
+Pickup latency, debug, and observability improvements for self-hosted runners.
+GitHub remains the scheduler; Marsh stays a thin reconciler on Daytona.
+
+### Added
+
+- GitHub `workflow_job` webhook fast path: optional `[webhook]` listener verifies
+  `X-Hub-Signature-256` and wakes the poller when a matching job is queued
+  (poller remains reconciliation truth). See [docs/ORCHESTRATOR.md](docs/ORCHESTRATOR.md).
+- Adaptive cycle polling: fast idle poll window after runner online, then settle
+  (`fast_idle_poll_secs` / `idle_poll_secs` / `busy_poll_secs`).
+- `hold_on_failure_secs`: keep the Daytona sandbox briefly after a failed job for
+  operator SSH debug before teardown.
+- Stage-level cycle telemetry (`jit_mint_secs`, `sandbox_create_secs`,
+  `runner_start_secs`, `teardown_secs`) and usage-report stage p95 when coverage
+  is complete.
+- Adopter documentation for orchestrator control loop, webhooks, and telemetry.
+
 ## [2026.7.2] - 2026-07-14
 
 Public-release hygiene documentation update. A release is not ready until the

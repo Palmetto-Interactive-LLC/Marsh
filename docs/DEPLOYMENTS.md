@@ -12,10 +12,10 @@ Marsh uses non-prefixed Calendar Versioning (CalVer): `YYYY.M.PATCH`.
 | Git ref | Artifact | Purpose |
 | --- | --- | --- |
 | `refs/heads/main` | integration branch | Verified source for future releases. |
-| `refs/tags/2026.7.2` | immutable GitHub Release | Open-source source release; no fleet deployment implied. |
+| `refs/tags/2026.7.3` | immutable GitHub Release | Open-source source release; no fleet deployment implied. |
 
 Create release tags only from verified commits on `main`, using a signed,
-annotated tag such as `2026.7.2`. Do not add a `v` prefix.
+annotated tag such as `2026.7.3`. Do not add a `v` prefix.
 
 ## Adopter deployments
 

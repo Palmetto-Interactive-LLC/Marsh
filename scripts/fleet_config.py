@@ -238,6 +238,51 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
                 or request_spacing < 0):
             fail(f"{profile_file}: [poller].request_spacing_secs must be a non-negative integer")
 
+    webhook = profile.get("webhook")
+    if webhook is not None:
+        if not isinstance(webhook, dict):
+            fail(f"{profile_file}: [webhook] must be a TOML table")
+        # hmac_env names the host env var that holds the GitHub webhook HMAC secret.
+        # The secret value itself must never appear in the profile.
+        require_only(webhook, {"listen", "hmac_env"}, f"{profile_file}: [webhook]")
+        listen = webhook.get("listen")
+        if not isinstance(listen, str) or ":" not in listen:
+            fail(f"{profile_file}: [webhook].listen must be host:port")
+        host, _, port_s = listen.rpartition(":")
+        host = host.strip().lower()
+        if host not in {"127.0.0.1", "0.0.0.0", "::1", "localhost"}:
+            fail(f"{profile_file}: [webhook].listen host must be loopback or 0.0.0.0")
+        try:
+            port = int(port_s)
+        except (TypeError, ValueError):
+            fail(f"{profile_file}: [webhook].listen port must be an integer")
+        if not (1 <= port <= 65535):
+            fail(f"{profile_file}: [webhook].listen port out of range")
+        hmac_env = webhook.get("hmac_env", "MARSH_WEBHOOK_HMAC")
+        if not isinstance(hmac_env, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", hmac_env):
+            fail(f"{profile_file}: [webhook].hmac_env must be a safe env var name")
+
+    lifecycle = profile.get("lifecycle")
+    if lifecycle is not None:
+        if not isinstance(lifecycle, dict):
+            fail(f"{profile_file}: [lifecycle] must be a TOML table")
+        require_only(lifecycle, {
+            "ephemeral", "auto_stop_minutes", "auto_delete_interval",
+            "idle_refresh_secs", "demand_idle_secs", "job_max_secs",
+            "hold_on_failure_secs", "idle_poll_secs", "fast_idle_poll_secs",
+            "fast_idle_window_secs", "busy_poll_secs",
+        }, f"{profile_file}: [lifecycle]")
+        for key in ("hold_on_failure_secs", "idle_poll_secs", "fast_idle_poll_secs",
+                    "fast_idle_window_secs", "busy_poll_secs", "job_max_secs",
+                    "idle_refresh_secs", "demand_idle_secs", "auto_stop_minutes"):
+            if key not in lifecycle:
+                continue
+            value = lifecycle[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                fail(f"{profile_file}: [lifecycle].{key} must be a non-negative integer")
+            if key in {"idle_poll_secs", "fast_idle_poll_secs", "busy_poll_secs"} and value < 1:
+                fail(f"{profile_file}: [lifecycle].{key} must be at least 1")
+
     watchdog = profile.get("watchdog")
     if watchdog is not None:
         if not isinstance(watchdog, dict):

@@ -223,7 +223,7 @@ bypass actors immediately after use.
    ```
 
 2. Create and publish a GitHub Release from a signed, annotated CalVer tag such
-   as `2026.7.2`. Do not use a `v` prefix.
+   as `2026.7.3`. Do not use a `v` prefix.
 3. Confirm the release points to the verified `main` commit and contains no
    deployment-specific information.
 4. Confirm a push to `main` does not deploy an adopter fleet.

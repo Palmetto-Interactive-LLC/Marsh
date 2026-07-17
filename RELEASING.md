@@ -37,8 +37,8 @@ source.
    `v` prefix:
 
    ```bash
-   git tag -s 2026.7.2 -m "Marsh 2026.7.2"
-   git push origin 2026.7.2
+   git tag -s 2026.7.3 -m "Marsh 2026.7.3"
+   git push origin 2026.7.3
    ```
 
 4. Create a GitHub Release from the tag. This source release does not itself
@@ -51,7 +51,7 @@ source.
 After publishing:
 
 ```bash
-gh release view 2026.7.2
+gh release view 2026.7.3
 gh repo view OWNER/REPO --json visibility,licenseInfo
 ```
 

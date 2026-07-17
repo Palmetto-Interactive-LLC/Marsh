@@ -477,12 +477,25 @@ def _nearest_rank(values: list[float], percentile: float) -> float:
     return ordered[max(0, math.ceil(percentile * len(ordered)) - 1)]
 
 
+def _stage_p95_summary(records: list[dict], field: str) -> str | None:
+    """p95 for a stage field when every record in the cohort has it."""
+    values = [
+        value for record in records
+        if (value := _finite_nonnegative(record.get(field))) is not None
+    ]
+    if len(values) != len(records) or not values:
+        return None
+    return f"{field.removesuffix('_secs')}={_nearest_rank(values, 0.95):.2f}s"
+
+
 def summarize_cycle_telemetry(events: list[dict]) -> list[str]:
     """Summarize reserved allocation and duration by immutable snapshot name.
 
     CPU/RAM/disk totals are controller-observed declared allocation-hours from
     successful sandbox creation through confirmed deletion. They are not peak
-    utilization or provider billing truth.
+    utilization or provider billing truth. Stage p95 figures (jit/create/start/
+    idle/busy/teardown) are included only when every record in the cohort has
+    that stage sample so mixed pre-rollout windows stay honest.
     """
     grouped: dict[str, list[dict]] = {}
     for event in events:
@@ -531,6 +544,15 @@ def summarize_cycle_telemetry(events: list[dict]) -> list[str]:
                 f"avg={sum(durations) / len(durations) / 60:.2f}m "
                 f"p95={_nearest_rank(durations, 0.95) / 60:.2f}m"
             )
+        stage_parts = [
+            part for field in (
+                "jit_mint_secs", "sandbox_create_secs", "runner_start_secs",
+                "idle_secs", "busy_secs", "teardown_secs",
+            )
+            if (part := _stage_p95_summary(records, field)) is not None
+        ]
+        if stage_parts:
+            duration_summary = f"{duration_summary}; stages p95 {'/'.join(stage_parts)}"
         allocation_summary = "allocation unavailable"
         if allocated_records == len(records):
             allocation_summary = (

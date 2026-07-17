@@ -7,7 +7,9 @@ registered to match it, plus a `min_idle` floor per size class for instant picku
 common single-job case. The old static warm pool is gone — `max` (a real burst ceiling)
 and `large` (spawn-from-zero) are both now live instead of dead config.
 
-Model — a reconciler ("poller") ticks every `[poller].interval_secs`:
+Model — a reconciler ("poller") ticks every `[poller].interval_secs`, and an
+optional GitHub `workflow_job` webhook listener wakes the poller immediately
+when a matching job is queued (Depot-style fast path; poller remains truth):
     dynamic repo list (the runner group's selected repos, via GitHub API — never
     hardcoded) -> queued job demand per size class -> busy-runner map -> per class:
     spawn max(demand deficit, floor deficit, 0) new "cycles", never letting live cycles
@@ -24,9 +26,10 @@ bookkeeping):
     SESSION command (process.exec's request/response is capped at ~3600s regardless
     of the timeout= passed to it; a session command returns its cmd_id immediately
     and is polled separately,
-    so no single HTTP request stays open for the runner's lifetime)  ->  poll every
-    ~15s for job pickup (busy map) / natural exit / idle+job deadlines  ->  delete
-    sandbox, deregister runner.
+    so no single HTTP request stays open for the runner's lifetime)  ->  adaptive
+    poll (fast while newly idle, then settle) for job pickup / natural exit /
+    idle+job deadlines  ->  optional hold_on_failure for Daytona SSH debug  ->
+    delete sandbox, deregister runner.
 An orphan sweep (~every 10min, from the main loop) generalizes the startup reap()
 using the registry to avoid touching anything still tracked.
 
@@ -37,10 +40,13 @@ manager with a bounded shutdown deadline.
 
 Env: DAYTONA_API_KEY, GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_KEY_PATH,
      MARSH_RUNNER_CONFIG (default /etc/marsh/runners.toml).
+     Optional webhook: MARSH_WEBHOOK_HMAC (or the env named by [webhook].hmac_env).
 """
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -61,6 +67,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Callable
 
 from daytona_sdk import (
     CreateSandboxFromSnapshotParams,
@@ -1035,6 +1043,161 @@ def _wake_status(status_wake: threading.Event | None) -> None:
         status_wake.set()
 
 
+# ─────────────────────────── GitHub webhooks (fast path) ───────────────────
+# Depot's GHA runners launch from workflow_job webhooks. Marsh keeps the poller
+# as the source of truth (webhooks are best-effort) and uses a verified webhook
+# only to *wake* the poller immediately when a matching job is queued.
+
+
+WEBHOOK_MAX_BODY = 1_048_576
+WEBHOOK_HMAC_ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+LISTEN_HOST = re.compile(r"^(?:127\.0\.0\.1|0\.0\.0\.0|::1|localhost)$")
+
+
+@dataclass(frozen=True)
+class WebhookConfig:
+    host: str
+    port: int
+    hmac_env: str
+
+
+def webhook_config_from_profile(cfg: dict) -> WebhookConfig | None:
+    """Parse optional [webhook] from a fleet profile. None means disabled."""
+    raw = cfg.get("webhook")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("[webhook] must be a table")
+    listen = raw.get("listen")
+    if not isinstance(listen, str) or ":" not in listen:
+        raise ValueError("[webhook].listen must be host:port")
+    host, _, port_s = listen.rpartition(":")
+    host = host.strip()
+    if not host or not LISTEN_HOST.fullmatch(host):
+        raise ValueError("[webhook].listen host must be a loopback or 0.0.0.0 bind")
+    try:
+        port = int(port_s)
+    except ValueError as exc:
+        raise ValueError("[webhook].listen port must be an integer") from exc
+    if not (1 <= port <= 65535):
+        raise ValueError("[webhook].listen port out of range")
+    hmac_env = raw.get("hmac_env", "MARSH_WEBHOOK_HMAC")
+    if not isinstance(hmac_env, str) or not WEBHOOK_HMAC_ENV_NAME.fullmatch(hmac_env):
+        raise ValueError("[webhook].hmac_env must be a safe env var name")
+    return WebhookConfig(host=host, port=port, hmac_env=hmac_env)
+
+
+def verify_github_webhook_signature(secret: bytes, body: bytes, signature_header: str | None) -> bool:
+    """Constant-time check of X-Hub-Signature-256 (sha256=<hex>)."""
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    digest = hmac.new(secret, body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(f"sha256={digest}", signature_header)
+
+
+def webhook_labels_match(job_labels: object, fleet_label_sets: list[set[str]]) -> bool:
+    """True when a queued job's labels are a superset of any configured size class."""
+    if not isinstance(job_labels, list):
+        return False
+    labels = {label for label in job_labels if isinstance(label, str) and label}
+    if not labels:
+        return False
+    return any(required <= labels for required in fleet_label_sets)
+
+
+def _make_webhook_handler(secret: bytes, wake: threading.Event,
+                          fleet_label_sets: list[set[str]],
+                          on_match: Callable[[], None] | None = None) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args) -> None:  # noqa: A003
+            # Never log request paths/bodies; webhook traffic is high volume.
+            return
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path in ("/healthz", "/"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"ok\n")
+                return
+            self.send_error(404)
+
+        def do_POST(self) -> None:  # noqa: N802
+            if self.path not in ("/github", "/webhook", "/"):
+                self.send_error(404)
+                return
+            length_s = self.headers.get("Content-Length", "")
+            try:
+                length = int(length_s)
+            except ValueError:
+                self.send_error(400, "bad Content-Length")
+                return
+            if length < 0 or length > WEBHOOK_MAX_BODY:
+                self.send_error(413, "body too large")
+                return
+            body = self.rfile.read(length)
+            if not verify_github_webhook_signature(
+                    secret, body, self.headers.get("X-Hub-Signature-256")):
+                self.send_error(401, "invalid signature")
+                return
+            event = self.headers.get("X-GitHub-Event", "")
+            if event == "ping":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"pong\n")
+                return
+            if event != "workflow_job":
+                self.send_response(202)
+                self.end_headers()
+                return
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self.send_error(400, "invalid json")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "invalid payload")
+                return
+            action = payload.get("action")
+            job = payload.get("workflow_job")
+            if action == "queued" and isinstance(job, dict) and webhook_labels_match(
+                    job.get("labels"), fleet_label_sets):
+                wake.set()
+                if on_match is not None:
+                    on_match()
+                log.info("webhook: matched queued workflow_job; waking poller")
+            self.send_response(202)
+            self.end_headers()
+
+    return Handler
+
+
+def start_webhook_server(cfg: WebhookConfig, wake: threading.Event,
+                         classes: list[dict],
+                         stop: threading.Event) -> ThreadingHTTPServer | None:
+    """Start a daemon webhook listener. Returns None when HMAC env is missing."""
+    secret_raw = os.environ.get(cfg.hmac_env, "")
+    if not secret_raw:
+        log.warning("webhook configured but %s is empty; webhook listener not started",
+                    cfg.hmac_env)
+        return None
+    secret = secret_raw.encode("utf-8")
+    fleet_label_sets = [set(cls.get("labels") or []) for cls in classes]
+    handler = _make_webhook_handler(secret, wake, fleet_label_sets)
+    server = ThreadingHTTPServer((cfg.host, cfg.port), handler)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, name="marsh-webhook", daemon=True)
+    thread.start()
+
+    def _shutdown_when_stopped() -> None:
+        stop.wait()
+        server.shutdown()
+
+    threading.Thread(target=_shutdown_when_stopped, name="marsh-webhook-stop", daemon=True).start()
+    log.info("webhook listener on %s:%d (paths /, /github, /webhook)", cfg.host, cfg.port)
+    return server
+
+
 def _runner_delete_confirmed(gh: GitHub, runner: RunnerRef) -> bool:
     """Accept historical mock/adapter ``None`` as success, never an explicit false.
 
@@ -1075,6 +1238,15 @@ class Lifecycle:
     auto_stop_minutes: int
     demand_idle_secs: int
     idle_refresh_secs: int
+    # Depot-style debug hold: keep the sandbox after a failed/nonzero job so an
+    # operator can attach via Daytona SSH before teardown. 0 disables.
+    hold_on_failure_secs: int = 0
+    # Cycle-loop poll cadence. Fast idle shortens pickup detection right after
+    # the runner comes online (the window where GitHub usually assigns work).
+    idle_poll_secs: int = 15
+    fast_idle_poll_secs: int = 3
+    fast_idle_window_secs: int = 90
+    busy_poll_secs: int = 10
 
 
 # ─────────────────────────── worker + pool ─────────────────────────────────
@@ -1092,6 +1264,13 @@ def _telemetry_timestamp(epoch: float | None) -> str | None:
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _stage_secs(start: float | None, end: float | None) -> float | None:
+    """Non-negative wall seconds between two epoch marks, or None if incomplete."""
+    if start is None or end is None:
+        return None
+    return round(max(end - start, 0.0), 3)
+
+
 def _declared_resources(cls: dict) -> dict[str, float | int]:
     """Return finite numeric resource declarations from the static profile."""
     resources: dict[str, float | int] = {}
@@ -1105,7 +1284,9 @@ def _declared_resources(cls: dict) -> dict[str, float | int]:
 
 
 def _log_cycle_telemetry(cycle_id: str, cls: dict, dt: Daytona, cycle_state: Cycle,
-                         sandbox_started_at: float | None, runner_command_started_at: float | None,
+                         sandbox_started_at: float | None, sandbox_ready_at: float | None,
+                         runner_command_started_at: float | None,
+                         jit_started_at: float | None, jit_completed_at: float | None,
                          completed_at: float, allocation_completed_at: float | None,
                          cleanup_status: str, outcome: str,
                          termination_reason: str, exit_code: int | None) -> None:
@@ -1113,6 +1294,11 @@ def _log_cycle_telemetry(cycle_id: str, cls: dict, dt: Daytona, cycle_state: Cyc
 
     Journald already durably retains the orchestrator's stdout/stderr. The declared
     resources describe intended snapshot capacity, not runtime utilization.
+
+    Stage durations (jit_mint / sandbox_create / runner_start / idle / busy /
+    teardown) are controller-observed wall times for pickup-latency diagnosis.
+    ``launch_secs`` remains create-request-start through runner-command-start so
+    existing consumers keep a single end-to-end launch figure.
     """
     labels = getattr(dt, "base_labels", {})
     if not isinstance(labels, dict):
@@ -1131,21 +1317,26 @@ def _log_cycle_telemetry(cycle_id: str, cls: dict, dt: Daytona, cycle_state: Cyc
         "outcome": outcome,
         "termination_reason": termination_reason,
         "started_at": _telemetry_timestamp(cycle_state.spawned_at),
+        "jit_started_at": _telemetry_timestamp(jit_started_at),
+        "jit_completed_at": _telemetry_timestamp(jit_completed_at),
         "sandbox_started_at": _telemetry_timestamp(sandbox_started_at),
+        "sandbox_ready_at": _telemetry_timestamp(sandbox_ready_at),
         "runner_command_started_at": _telemetry_timestamp(runner_command_started_at),
         "busy_at": _telemetry_timestamp(busy_at),
         "completed_at": _telemetry_timestamp(completed_at),
         "allocation_completed_at": _telemetry_timestamp(allocation_completed_at),
         "cleanup_status": cleanup_status,
         "total_secs": round(max(completed_at - cycle_state.spawned_at, 0.0), 3),
-        "allocated_secs": round(max(allocation_completed_at - sandbox_started_at, 0.0), 3)
-        if sandbox_started_at is not None and allocation_completed_at is not None else None,
-        "launch_secs": round(max(runner_command_started_at - sandbox_started_at, 0.0), 3)
-        if runner_command_started_at is not None and sandbox_started_at is not None else None,
-        "idle_secs": round(max((busy_at or completed_at) - runner_command_started_at, 0.0), 3)
+        "allocated_secs": _stage_secs(sandbox_started_at, allocation_completed_at),
+        "jit_mint_secs": _stage_secs(jit_started_at, jit_completed_at),
+        "sandbox_create_secs": _stage_secs(sandbox_started_at, sandbox_ready_at),
+        "runner_start_secs": _stage_secs(sandbox_ready_at, runner_command_started_at),
+        "launch_secs": _stage_secs(sandbox_started_at, runner_command_started_at),
+        "idle_secs": _stage_secs(runner_command_started_at, busy_at or completed_at)
         if (runner_command_started_at is not None
             and (outcome == "idle" or busy_at is not None)) else None,
-        "busy_secs": round(max(completed_at - busy_at, 0.0), 3) if busy_at is not None else None,
+        "busy_secs": _stage_secs(busy_at, completed_at),
+        "teardown_secs": _stage_secs(completed_at, allocation_completed_at),
         "job_phase_observed": busy_at is not None if outcome == "job" else None,
         "runner_exit_code": exit_code,
         "declared_resources": _declared_resources(cls),
@@ -1312,7 +1503,10 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
     sandbox = None
     jit_mint_attempted = False
     sandbox_create_attempted = False
+    jit_started_at = None
+    jit_completed_at = None
     sandbox_started_at = None
+    sandbox_ready_at = None
     runner_command_started_at = None
     exit_code = None
     outcome = "failed"
@@ -1351,7 +1545,9 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
             log.info("[%s] quiesce hit before JIT mint; discarding unstarted cycle", cls["name"])
             return
         jit_mint_attempted = True
+        jit_started_at = _cycle_now()
         runner, jit = gh.mint_jit(group_id, cls["labels"], repository)
+        jit_completed_at = _cycle_now()
         with REGISTRY_LOCK:
             REGISTRY[cycle_id].runner = runner
         _wake_status(status_wake)
@@ -1372,6 +1568,7 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
         # sandbox. A failed create or earlier GitHub JIT work must never be
         # multiplied into provider resource-hours.
         sandbox_started_at = sandbox_create_started_at
+        sandbox_ready_at = _cycle_now()
         with REGISTRY_LOCK:
             REGISTRY[cycle_id].sandbox_id = sandbox.id
         _wake_status(status_wake)
@@ -1392,13 +1589,38 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
         # This is command-launch completion, not proof that GitHub already sees
         # the runner online. Keep the telemetry name explicit about that limit.
         runner_command_started_at = _cycle_now()
+        # Operational poll cadence uses monotonic time so it never consumes the
+        # telemetry clock seam (_cycle_now) used by tests and stage durations.
+        runner_online_mono = time.monotonic()
         target = f" repository={repository}" if repository else ""
         log.info("[%s] runner up: sandbox=%s runner_id=%s%s idle_deadline=%ds",
                  cls["name"], sandbox.id, runner.runner_id, target, REGISTRY[cycle_id].idle_deadline_secs)
 
         session_read_errs = 0
+
+        def _cycle_poll_secs(state: str) -> float:
+            """Adaptive poll: fast while idle and newly online (Depot-like pickup)."""
+            if state == "BUSY":
+                return float(max(lc.busy_poll_secs, 1))
+            age = time.monotonic() - runner_online_mono
+            if age < max(lc.fast_idle_window_secs, 0):
+                return float(max(lc.fast_idle_poll_secs, 1))
+            return float(max(lc.idle_poll_secs, 1))
+
+        def _cycle_sleep(secs: float) -> None:
+            """Sleep secs unless stop is set. Prefer Event.wait for interruptibility."""
+            if stop.is_set():
+                return
+            wait = getattr(stop, "wait", None)
+            if callable(wait):
+                wait(secs)
+            else:
+                time.sleep(secs)
+
         while True:
-            time.sleep(15)
+            with REGISTRY_LOCK:
+                poll_state = REGISTRY[cycle_id].state
+            _cycle_sleep(_cycle_poll_secs(poll_state))
             try:
                 exit_code = dt.session_exit_code(sandbox, cmd_id)
                 session_read_errs = 0
@@ -1504,6 +1726,21 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
         completed_at = _cycle_now()
         with REGISTRY_LOCK:
             completed_state = REGISTRY.get(cycle_id, initial_state)
+        # Depot CI offers SSH into failed jobs. Marsh keeps the Daytona sandbox
+        # alive briefly so an operator can `daytona ssh` before teardown.
+        if (sandbox is not None and lc.hold_on_failure_secs > 0
+                and (outcome == "failed"
+                     or (exit_code is not None and exit_code != 0))):
+            hold_for = int(lc.hold_on_failure_secs)
+            log.warning("[%s] hold_on_failure: keeping sandbox=%s for %ds "
+                        "(outcome=%s exit=%s); attach with Daytona SSH then wait",
+                        cls["name"], sandbox.id, hold_for, outcome, exit_code)
+            # Interruptible on drain/stop when stop is a threading.Event.
+            wait = getattr(stop, "wait", None)
+            if callable(wait):
+                wait(hold_for)
+            else:
+                time.sleep(hold_for)
         allocation_completed_at = None
         cleanup_status = "create_unconfirmed" if sandbox_create_attempted else "create_not_attempted"
         if sandbox is not None:
@@ -1520,7 +1757,8 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
                 log.warning("[%s] sandbox delete failed: %s", cls["name"], str(e)[:80])
         try:
             _log_cycle_telemetry(
-                cycle_id, cls, dt, completed_state, sandbox_started_at, runner_command_started_at,
+                cycle_id, cls, dt, completed_state, sandbox_started_at, sandbox_ready_at,
+                runner_command_started_at, jit_started_at, jit_completed_at,
                 completed_at, allocation_completed_at, cleanup_status, outcome,
                 termination_reason, exit_code,
             )
@@ -1852,12 +2090,18 @@ def main() -> None:
         auto_stop_minutes=int(lcfg.get("auto_stop_minutes", 120)),
         demand_idle_secs=int(lcfg.get("demand_idle_secs", 300)),
         idle_refresh_secs=int(lcfg.get("idle_refresh_secs", 1800)),
+        hold_on_failure_secs=int(lcfg.get("hold_on_failure_secs", 0)),
+        idle_poll_secs=int(lcfg.get("idle_poll_secs", 15)),
+        fast_idle_poll_secs=int(lcfg.get("fast_idle_poll_secs", 3)),
+        fast_idle_window_secs=int(lcfg.get("fast_idle_window_secs", 90)),
+        busy_poll_secs=int(lcfg.get("busy_poll_secs", 10)),
     )
     poll_default = 60 if scope == GITHUB_SCOPE_REPOSITORY else 20
     poll_interval = int(poller_cfg.get("interval_secs", poll_default))
     classes = cfg["size_class"]
     required_labels = routing_required_labels(cfg)
     network_policy = network_policy_from_config(cfg)
+    webhook_cfg = webhook_config_from_profile(cfg)
 
     global ORG_LABEL, FLEET_LABEL, GITHUB_SCOPE
     ORG_LABEL = owner.lower()
@@ -1919,6 +2163,13 @@ def main() -> None:
         return
     if start_quiesced:
         log.info("orchestrator started quiesced; waiting for SIGUSR2 before provider initialization")
+
+    webhook_server = None
+    if webhook_cfg is not None:
+        # Start even while quiesced: a wake is harmless until admission opens,
+        # and operators can health-check the listener before SIGUSR2.
+        webhook_server = start_webhook_server(
+            webhook_cfg, control.wake, classes, control.stop)
 
     last_sweep = 0.0
     reconciled = False
@@ -1983,6 +2234,11 @@ def main() -> None:
         control.wake.wait(2)
         control.wake.clear()
     publish_runtime_status()
+    if webhook_server is not None:
+        try:
+            webhook_server.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
     log.info("drain complete; registry empty")
 
 
