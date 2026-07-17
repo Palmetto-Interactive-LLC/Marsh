@@ -6,9 +6,9 @@ import hmac
 import json
 import threading
 import unittest
-from unittest.mock import patch
-
 import urllib.error
+import urllib.request
+from unittest.mock import patch
 
 from tests.support import load_module, load_orchestrator
 
@@ -64,7 +64,6 @@ class WebhookHandlerTests(unittest.TestCase):
         self.server.server_close()
 
     def _post(self, body: bytes, event: str = "workflow_job", signed: bool = True) -> int:
-        import urllib.request
         headers = {"Content-Type": "application/json", "X-GitHub-Event": event}
         if signed:
             headers["X-Hub-Signature-256"] = (
