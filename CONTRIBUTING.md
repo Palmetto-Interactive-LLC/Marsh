@@ -7,16 +7,19 @@ The supported human-facing types are **Bug**, **Feature**, **Epic**, and
 **Issue**; see [docs/ISSUE-TRACKING.md](docs/ISSUE-TRACKING.md) for the exact
 GitHub label and Linear work-item guidance.
 
-Linear is the durable implementation tracker. When a GitHub issue becomes
-implementation work, create or update the matching Linear issue or project and
-link it from the pull request.
+Palmetto Interactive Linear is the durable implementation tracker. Marsh work
+rolls up to the **Marsh** initiative: use a Linear project for a multi-change
+effort and Linear issues for independently deliverable changes. When public
+GitHub intake becomes implementation work, create or update the matching
+Linear work item and link it from the pull request.
 
 Never place vulnerability details, secrets, customer data, or private incident
 notes in public GitHub issues.
 
 ## Pull Requests
 
-1. Start from a Linear issue, Linear project, or GitHub intake issue.
+1. Start from a Marsh Linear issue or project, or from a GitHub intake issue
+   that will be routed there during triage.
 2. Create a branch from `main`.
 3. Use signed commits.
 4. Keep history linear and changes focused.
