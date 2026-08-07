@@ -4,7 +4,7 @@
 
 ## Checks
 
-- [ ] Linked GitHub issue or Linear work item
+- [ ] Linked the Marsh Linear issue/project for internal work, or the GitHub intake issue
 - [ ] Tests, linters, or docs-only rationale noted
 - [ ] Security and secret-handling impact considered
 - [ ] Deployment impact noted

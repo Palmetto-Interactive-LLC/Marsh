@@ -312,9 +312,9 @@ sync_deployment_policies production 'tag:20*'
 
 ensure_label type:bug d73a4a 'Reproducible defect for public intake.'
 ensure_label type:feature a2eeef 'New capability or behavior change for public intake.'
-ensure_label type:epic 5319e7 'Large body of related work that may become a Linear project.'
+ensure_label type:epic 5319e7 'Large body of related work that may become a project in the repository Linear initiative.'
 ensure_label type:issue cfd3d7 'General human-reported work item for public intake.'
-ensure_label needs-triage ffb347 'Needs review before routing to Linear.'
+ensure_label needs-triage ffb347 'Needs review before routing to the repository Linear initiative.'
 
 cat <<SUMMARY
 
