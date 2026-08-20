@@ -32,6 +32,32 @@ disk_gib = 10
 min_idle = 0
 max = 4
 
+# Optional GPU class. The snapshot fixes GPU units at registration
+# (infra/snapshots/register-gpu-snapshot.sh). `spot = true` requests
+# preemptible GPU capacity: Daytona may terminate the sandbox without notice,
+# so route only retry-safe jobs at this label.
+# [[size_class]]
+# name = "gpu"
+# labels = ["self-hosted", "daytona", "marsh", "gpu"]
+# snapshot = "marsh-runner-gpu-example"
+# cpu = 8
+# memory_gib = 32
+# disk_gib = 50
+# gpu = 1
+# spot = true
+# min_idle = 0
+# max = 2
+
+# Optional per-tool cache volumes. Each mounts a Daytona volume at
+# /cache/<mount>; the job hooks store tool tarballs there instead of growing
+# the single [cache].volume bucket.
+# [[volume]]
+# name = "example-cache-pip"
+# mount = "pip"
+# [[volume]]
+# name = "example-cache-node"
+# mount = "npm"
+
 [lifecycle]
 ephemeral = true
 auto_stop_minutes = 120
