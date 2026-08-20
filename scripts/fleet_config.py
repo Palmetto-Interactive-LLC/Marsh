@@ -37,6 +37,17 @@ ORGANIZATION_SCOPE = "organization"
 REPOSITORY_SCOPE = "repository"
 SCOPES = {ORGANIZATION_SCOPE, REPOSITORY_SCOPE}
 DAYTONA_TARGET = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+VOLUME_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+# Every ``[[volume]]`` mount becomes a filesystem path inside the sandbox, so a
+# mount is one conservative path component and nothing else.
+VOLUME_MOUNT = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+# The mounts the job hooks actually route a cache tarball to. This set must stay
+# identical to ``vol_for`` in runner-image/hooks/cache-{restore,save}.sh: a mount
+# the hooks do not know about would be mounted and billed on every sandbox while
+# staying permanently empty, which is silent waste rather than a loud failure.
+# Docker layer cache is deliberately absent -- it belongs in a registry-backed
+# cache, not on the FUSE volume (see the cache model in README.md).
+CACHE_MOUNTS = frozenset({"cargo", "go", "npm", "pip", "sccache"})
 NETWORK_POLICY = "deny-by-default"
 DOMAIN_NAME = re.compile(
     r"^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
@@ -169,6 +180,48 @@ def validate_network(profile_file: Path, profile: dict[str, Any], scope: str) ->
     return required
 
 
+def validate_volumes(profile_file: Path, profile: dict[str, Any]) -> None:
+    """Validate optional per-tool cache volumes.
+
+    Each ``[[volume]]`` entry names a Daytona volume and the single path
+    component it is mounted at under ``/cache``. The job hooks route a tool's
+    tarball to ``/cache/<mount>/<repo>/`` when that mount exists and fall back
+    to the shared ``[cache].volume`` layout otherwise, so the mount set is a
+    closed allowlist and the shared volume remains required: without it every
+    unrouted tool would silently cache to ephemeral container storage.
+    """
+    volumes = profile.get("volume")
+    if volumes is None:
+        return
+    if not isinstance(volumes, list) or not volumes:
+        fail(f"{profile_file}: [[volume]] must be a non-empty array of tables")
+    if not profile.get("cache"):
+        fail(f"{profile_file}: [[volume]] requires a [cache].volume fallback for unrouted tools")
+    seen_names: set[str] = set()
+    seen_mounts: set[str] = set()
+    for entry in volumes:
+        if not isinstance(entry, dict):
+            fail(f"{profile_file}: every [[volume]] must be a table")
+        require_only(entry, {"name", "mount"}, f"{profile_file}: [[volume]]")
+        name = require_string(entry, "name", str(profile_file))
+        if not VOLUME_NAME.fullmatch(name):
+            fail(f"{profile_file}: invalid [[volume]].name {name!r}")
+        mount = require_string(entry, "mount", str(profile_file))
+        if not VOLUME_MOUNT.fullmatch(mount):
+            fail(f"{profile_file}: invalid [[volume]].mount {mount!r}")
+        if mount not in CACHE_MOUNTS:
+            fail(
+                f"{profile_file}: [[volume]].mount {mount!r} is not routed by the job "
+                f"hooks; supported mounts are {sorted(CACHE_MOUNTS)}"
+            )
+        if name in seen_names:
+            fail(f"{profile_file}: duplicate [[volume]].name {name!r}")
+        if mount in seen_mounts:
+            fail(f"{profile_file}: duplicate [[volume]].mount {mount!r}")
+        seen_names.add(name)
+        seen_mounts.add(mount)
+
+
 def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, Any]:
     profile = load_toml(profile_file)
     github = profile.get("github")
@@ -220,8 +273,13 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
 
     cache = profile.get("cache")
     if cache is not None:
-        if not isinstance(cache, dict) or not require_string(cache, "volume", str(profile_file)):
+        if not isinstance(cache, dict):
+            fail(f"{profile_file}: [cache] must be a TOML table")
+        require_only(cache, {"volume"}, f"{profile_file}: [cache]")
+        if not require_string(cache, "volume", str(profile_file)):
             fail(f"{profile_file}: [cache].volume must be a non-empty string when [cache] exists")
+
+    validate_volumes(profile_file, profile)
 
     poller = profile.get("poller")
     if poller is not None:
@@ -319,9 +377,24 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
             if (not isinstance(numeric_value, int) or isinstance(numeric_value, bool)
                     or numeric_value < 0):
                 fail(f"{profile_file}: size class {name!r} has invalid {numeric}")
+        gpu = item.get("gpu")
+        if gpu is not None and (not isinstance(gpu, int) or isinstance(gpu, bool) or gpu < 0):
+            fail(f"{profile_file}: size class {name!r} gpu must be a non-negative integer")
+        spot = item.get("spot")
+        if spot is not None and not isinstance(spot, bool):
+            fail(f"{profile_file}: size class {name!r} spot must be a boolean")
         min_idle = item["min_idle"]
         if min_idle > item["max"]:
             fail(f"{profile_file}: size class {name!r} min_idle cannot exceed max")
+        if spot:
+            # Spot capacity is reclaimed without notice, so a warm floor held on
+            # it is a floor the fleet does not actually have.
+            if min_idle != 0:
+                fail(f"{profile_file}: spot size class {name!r} must set min_idle = 0")
+            # Spot is GPU-only capacity in Daytona; requesting it for a CPU class
+            # would silently do nothing.
+            if not gpu:
+                fail(f"{profile_file}: spot size class {name!r} must declare gpu >= 1")
         if scope == REPOSITORY_SCOPE and min_idle != 0:
             fail(f"{profile_file}: repository-scoped size class {name!r} must set min_idle = 0")
         warm_floor_reason = item.get("warm_floor_reason")
