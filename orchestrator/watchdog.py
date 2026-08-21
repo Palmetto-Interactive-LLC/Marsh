@@ -128,6 +128,9 @@ def save_state(state: dict) -> None:
 # notification
 
 
+NOTIFY_USER_AGENT = "marsh-watchdog/1"
+
+
 def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
     n = cfg.get("notify", {})
     url = n.get("url", "")
@@ -141,6 +144,11 @@ def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
     else:  # ntfy
         data = body.encode()
         headers = {"Title": title, "Priority": priority, "Tags": "rotating_light" if priority == "high" else "white_check_mark"}
+    # A webhook host behind a WAF (Cloudflare's browser-integrity check, for
+    # one) answers urllib's default agent with HTTP 403 "error code: 1010", so
+    # every alert is rejected while the check pass still looks healthy. Sending
+    # a conventional User-Agent is load-bearing, not cosmetic.
+    headers["User-Agent"] = NOTIFY_USER_AGENT
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if not url.startswith(("https://", "http://")):
@@ -157,8 +165,6 @@ def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
         print(f"[notify failed] HTTP {status}: {title}", file=sys.stderr)
     except OSError as e:  # alerting must never crash the check pass
         print(f"[notify failed] {e}: {title}", file=sys.stderr)
-
-
 
 
 # --------------------------------------------------------------------------
