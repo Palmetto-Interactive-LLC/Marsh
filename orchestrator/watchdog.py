@@ -20,10 +20,12 @@ Checks, per configured [[instance]] (one orchestrator process/org):
 
 Alerts POST to [notify].url (ntfy-style headers or plain JSON), deduplicate via
 a state file so a persistent failure re-pages on `realert_minutes` instead of
-every timer tick, and send a recovery notice when a condition clears. A
-successful all-clear pass can GET [notify].heartbeat_url as a dead-man's
-switch: if this watchdog (or the whole host) dies, the missing heartbeat is
-itself the page.
+every timer tick, and send a recovery notice when a condition clears.
+
+This watchdog runs on the host it watches, so it cannot report that host's
+death: if the box goes down, the alerting goes down with it and the silence
+looks identical to health. Detecting that is out of scope here and belongs to
+something outside this failure domain.
 
 Configuration: TOML file (default /etc/marsh/watchdog.toml, see
 config/watchdog.example.toml). Reuses the orchestrator's GitHub App and
@@ -126,6 +128,9 @@ def save_state(state: dict) -> None:
 # notification
 
 
+NOTIFY_USER_AGENT = "marsh-watchdog/1"
+
+
 def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
     n = cfg.get("notify", {})
     url = n.get("url", "")
@@ -139,6 +144,11 @@ def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
     else:  # ntfy
         data = body.encode()
         headers = {"Title": title, "Priority": priority, "Tags": "rotating_light" if priority == "high" else "white_check_mark"}
+    # A webhook host behind a WAF (Cloudflare's browser-integrity check, for
+    # one) answers urllib's default agent with HTTP 403 "error code: 1010", so
+    # every alert is rejected while the check pass still looks healthy. Sending
+    # a conventional User-Agent is load-bearing, not cosmetic.
+    headers["User-Agent"] = NOTIFY_USER_AGENT
     if token:
         headers["Authorization"] = f"Bearer {token}"
     if not url.startswith(("https://", "http://")):
@@ -155,17 +165,6 @@ def notify(cfg: dict, title: str, body: str, priority: str = "high") -> None:
         print(f"[notify failed] HTTP {status}: {title}", file=sys.stderr)
     except OSError as e:  # alerting must never crash the check pass
         print(f"[notify failed] {e}: {title}", file=sys.stderr)
-
-
-def heartbeat(cfg: dict) -> None:
-    url = cfg.get("notify", {}).get("heartbeat_url", "")
-    if not url.startswith(("https://", "http://")):
-        return
-    try:
-        # Operator-configured heartbeat URL, scheme-checked above — never request input.
-        urllib.request.urlopen(url, timeout=15).read()  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-    except OSError as e:
-        print(f"[heartbeat failed] {e}", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------
@@ -434,7 +433,6 @@ def cmd_check(cfg: dict) -> int:
         print(f)
     if not findings:
         print("all clear")
-        heartbeat(cfg)
     return 1 if findings else 0
 
 

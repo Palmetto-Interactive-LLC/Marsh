@@ -8,10 +8,30 @@ CACHE_VOL="${CACHE_VOL:-/cache}"
 LOCAL="${CACHE_LOCAL:-/home/daytona/.marsh-cache}"
 repo="${GITHUB_REPOSITORY:-unknown}"; repo="${repo//\//_}"
 base="${CACHE_VOL}/${repo}"
-mkdir -p "$base" 2>/dev/null || true
+
+# Writes go to the per-tool volume at /cache/<mount>/<repo>/ when the
+# orchestrator mounted one, otherwise to the legacy shared-volume layout at
+# /cache/<repo>/. Must mirror vol_for in cache-restore.sh.
+vol_for() { # <name> -> per-tool mount dir ("" = legacy only)
+  case "$1" in
+    cargo) echo cargo ;;
+    go-mod|go-build) echo go ;;
+    npm) echo npm ;;
+    pip) echo pip ;;
+    sccache) echo sccache ;;
+    *) echo "" ;;
+  esac
+}
 
 save() { # <name> <local-dir>
-  local name="$1" dir="$2" tmp="/tmp/${1}.tgz" tgz="${base}/${1}.tgz"
+  local name="$1" dir="$2" tmp="/tmp/${1}.tgz" dest tgz
+  dest="$base"
+  local mount; mount="$(vol_for "$name")"
+  if [ -n "$mount" ] && [ -d "${CACHE_VOL}/${mount}" ]; then
+    dest="${CACHE_VOL}/${mount}/${repo}"
+  fi
+  mkdir -p "$dest" 2>/dev/null || true
+  tgz="${dest}/${name}.tgz"
   [ -d "$dir" ] || { echo "cache-save: skip ${name} (no dir)"; return 0; }
   # tar to local tmp first (POSIX), then copy the whole file onto the S3 volume.
   if tar -czf "$tmp" -C "$dir" . 2>/dev/null; then

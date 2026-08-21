@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Type:** Epic. Internal delivery work is organized as a Linear project after triage.
+        **Type:** Epic. Internal delivery work is organized as a Linear project under the Marsh initiative after triage.
         Use this when the work should break down into multiple child items.
   - type: dropdown
     id: item_type
@@ -24,7 +24,7 @@ body:
     attributes:
       label: Pre-flight
       options:
-        - label: I searched existing GitHub issues and relevant Linear work before filing.
+        - label: I searched existing GitHub issues and the Marsh initiative in Linear before filing.
           required: true
   - type: textarea
     id: mission

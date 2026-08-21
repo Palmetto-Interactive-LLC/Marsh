@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Type:** Bug. Internal delivery work is tracked in Linear after triage.
+        **Type:** Bug. Internal delivery work is tracked as a Linear issue under the Marsh initiative after triage.
         Use this only for a reproducible defect in existing behavior.
   - type: dropdown
     id: item_type
@@ -25,7 +25,7 @@ body:
       label: Pre-flight
       description: Confirm this is not already tracked.
       options:
-        - label: I searched existing GitHub issues and relevant Linear work before filing.
+        - label: I searched existing GitHub issues and the Marsh initiative in Linear before filing.
           required: true
   - type: textarea
     id: summary
