@@ -54,7 +54,7 @@ silently.
   long, including the case where a repository was never added to the runner
   group; sandbox count/age sanity) and `usage-report` (daily spawn counts per
   size class). Alerts POST to any webhook (ntfy headers or JSON) with state-file
-  dedup, recovery notices, and an optional heartbeat dead-man's switch.
+  dedup and recovery notices.
 - Watchdog configuration examples and lifecycle guidance.
 
 ### Fixed

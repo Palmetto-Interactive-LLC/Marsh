@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import tempfile
@@ -144,6 +145,25 @@ class PreflightAndWatchdogTests(unittest.TestCase):
                 "https://attacker.example/collect",
             )
         )
+
+    def test_notifications_send_a_conventional_user_agent(self) -> None:
+        """A WAF in front of the webhook rejects urllib's default agent (403 1010)."""
+        for fmt in ("ntfy", "json"):
+            requests = []
+
+            def captured(request, timeout):
+                requests.append(request)
+                return contextlib.closing(io.BytesIO(b""))
+
+            cfg = {"notify": {"url": "https://notify.example/topic", "format": fmt}}
+            with mock.patch.object(watchdog, "open_without_redirects", side_effect=captured), \
+                 mock.patch("builtins.print"):
+                watchdog.notify(cfg, "title", "body")
+
+            self.assertEqual(len(requests), 1, fmt)
+            self.assertEqual(
+                requests[0].get_header("User-agent"), watchdog.NOTIFY_USER_AGENT, fmt,
+            )
 
     def test_usage_report_groups_structured_cycles_by_snapshot(self) -> None:
         self.assertEqual(watchdog.CYCLE_TELEMETRY_PREFIX, orch.CYCLE_TELEMETRY_PREFIX)

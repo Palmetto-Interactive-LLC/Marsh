@@ -1,0 +1,158 @@
+# syntax=docker/dockerfile:1
+# Marsh GPU runner - GitHub Actions self-hosted runner for Daytona GPU-class
+# sandboxes. Sibling of runner-image/Dockerfile; every non-GPU-specific line
+# below is copied from that file on purpose so the two images present an
+# identical Actions-runner contract to the orchestrator (same runner version,
+# non-root `daytona` user, workdir, hook wiring, cache-hook env). Diff this
+# file against runner-image/Dockerfile when bumping either one.
+#
+# Base: nvidia/cuda:12.9.2-cudnn-runtime-ubuntu22.04 (pinned tag, verified
+# published on Docker Hub), NOT daytonaio/sandbox:0.8.0. Runtime (not -devel):
+# GPU CI jobs here are expected to run pre-built ML/CUDA wheels (torch,
+# onnxruntime-gpu, etc. via pip, cached through the existing pip cache hook) —
+# not compile CUDA kernels from source. If a workflow ever needs `nvcc` this
+# base must move to the `-devel` tag; that is a real gap today, tracked below
+# as UNVERIFIED rather than guessed at.
+#
+# NVIDIA driver / kernel modules are intentionally NOT installed here. GPU
+# access is a host (Daytona GPU node) concern — the container talks to the
+# host driver through the NVIDIA Container Toolkit / device passthrough that
+# Daytona wires up when it schedules a sandbox onto GPU capacity. Baking a
+# driver into the image would fight the host's driver version instead of
+# matching it.
+#
+# Because we start from an Ubuntu 22.04 CUDA image instead of daytonaio/sandbox,
+# none of git/gh/node20/the `daytona` user/docker are present — every one of
+# them is installed explicitly below (daytonaio/sandbox's own extras, e.g.
+# claude-code, are NOT reproduced; add them only if a GPU workflow needs them).
+#
+# linux/amd64 only (matches runner-image/Dockerfile and the CUDA tag above).
+#
+# Registered as its own sized GPU snapshot (see
+# infra/snapshots/register-gpu-snapshot.sh — GPU units are fixed at snapshot
+# registration, so it is never one of the two general snapshots created off
+# runner-image/Dockerfile):
+#   infra/snapshots/register-gpu-snapshot.sh marsh-runner-gpu-v1 \
+#     ghcr.io/palmetto-interactive-llc/marsh-runner-gpu:v1 1 8 32 50
+FROM nvidia/cuda:12.9.2-cudnn-runtime-ubuntu22.04
+
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.23.5
+
+# Core CI deps (must succeed on any build host). Identical list to
+# runner-image/Dockerfile.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl jq git unzip zip tar xz-utils build-essential \
+      python3 python3-venv python3-pip pkg-config libssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root `daytona` user. daytonaio/sandbox provisions this user itself; the
+# CUDA base does not, so it is created here. UNVERIFIED: the exact UID/GID
+# daytonaio/sandbox:0.8.0 assigns to `daytona` (commonly 1000 as the first
+# non-root user, but not confirmed against that image) — `useradd -m` below
+# takes the next available UID, which may not match. Only matters if anything
+# depends on a stable UID across the two runner images (e.g. cache-volume
+# file ownership); flag before relying on that.
+RUN useradd -m -s /bin/bash daytona
+
+# Docker (docker-ce + cli + containerd + buildx) from Docker's official apt
+# repo — same packages as runner-image/Dockerfile, but pointed at Docker's
+# Ubuntu repo (codename jammy) instead of its Debian repo, because this base
+# is Ubuntu 22.04, not the Debian base daytonaio/sandbox uses. Gives the GPU
+# runner the same DinD parity (dockerd started by run-ephemeral.sh, daytona
+# user in the docker group) as the default/large runners.
+RUN install -m0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+ && usermod -aG docker daytona \
+ && rm -rf /var/lib/apt/lists/*
+# shellcheck (also a scanner) — best-effort, not in every base's apt repo.
+RUN apt-get update && apt-get install -y --no-install-recommends shellcheck 2>/dev/null || true; rm -rf /var/lib/apt/lists/* || true
+
+# ── Node.js 20 (runtime for the Actions runner's JS actions; daytonaio/sandbox
+#    ships this, the CUDA base does not). PINNED tarball install, same version
+#    already tracked for setup-node cache seeding (see seed-toolcache.sh) so
+#    the runner's own Node and the pre-seeded hostedtoolcache entry agree. ──
+ARG NODE_VERSION=20.18.1
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" | tar -xz -C /usr/local --strip-components=1
+
+# ── gh CLI (PINNED for reproducible builds — no unauthenticated GitHub API
+#    calls during build, which rate-limit per host). Same version as
+#    runner-image/Dockerfile. ──
+ARG GH_VERSION=2.95.0
+RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" | tar -xz -C /tmp \
+ && install -m0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh && rm -rf /tmp/gh_*
+
+# ── GitHub Actions runner (CORE; PINNED). Same version as runner-image/Dockerfile —
+#    keep the two in lockstep; the orchestrator's JIT registration assumes one
+#    runner contract across all size classes. ──
+ARG RUNNER_VERSION=2.335.1
+RUN mkdir -p /opt/actions-runner && cd /opt/actions-runner \
+ && curl -fsSL "https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" | tar -xz \
+ && ./bin/installdependencies.sh \
+ && chown -R daytona:daytona /opt/actions-runner
+
+# ── Go (stable URL) ─────────────────────────────────────────────────────────
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -xz -C /usr/local \
+ && ln -sf /usr/local/go/bin/go /usr/local/bin/go && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+# ── Rust + sccache (for the daytona user; on PATH at runtime) ────────────────
+# Same rationale as runner-image/Dockerfile: ship latest STABLE, not a hard
+# pin, so rustup can self-update to whatever a repo's rust-toolchain.toml
+# needs at job time. /home/daytona/.local/bin FIRST on PATH for the same
+# reason as the default/large image: `pip install --user` PINNED security
+# scanners there must shadow anything baked here.
+ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo PATH=/home/daytona/.local/bin:/opt/rust/cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+RUN mkdir -p /opt/rust && chown -R daytona:daytona /opt/rust
+USER daytona
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable \
+ && rustup component add clippy rustfmt
+USER root
+# sccache prebuilt binary, PINNED (no API call → no per-host rate-limit).
+ARG SCCACHE_VERSION=v0.8.2
+RUN ( curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C /tmp \
+      && install -m0755 /tmp/sccache-*/sccache /usr/local/bin/sccache ) || echo "warn: sccache"
+
+# ── Scanners, PINNED (no API calls; best-effort so a bad URL never fails build) ─
+ARG ACTIONLINT_VERSION=1.7.7
+ARG GITLEAKS_VERSION=8.24.3
+ARG TRIVY_VERSION=0.72.0
+RUN set -x; \
+  ( curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin actionlint ) || echo "warn: actionlint"; \
+  ( curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks ) || echo "warn: gitleaks"; \
+  ( curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar -xz -C /usr/local/bin trivy ) || echo "warn: trivy"
+# NOTE: semgrep/checkov/zizmor are deliberately NOT baked, same as
+# runner-image/Dockerfile — the security workflows `pip install --user` their
+# own PINNED versions and call them by bare name.
+
+# ── Pre-seed RUNNER_TOOL_CACHE (best-effort; fixes setup-python on Debian —
+#    kept even though this base is Ubuntu, so setup-python/setup-node behave
+#    identically across every Marsh runner size class). ──
+ENV RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+RUN mkdir -p "$RUNNER_TOOL_CACHE" && chown -R daytona:daytona "$RUNNER_TOOL_CACHE"
+COPY runner-image/seed-toolcache.sh /usr/local/bin/seed-toolcache.sh
+# Mount the GH token (BuildKit secret) so the python-build-standalone API lookup is
+# authenticated (unauth API rate-limits per build host). Secret is NOT baked into
+# any layer. Build with: --secret id=ghtoken,src=<token-file> (optional).
+RUN --mount=type=secret,id=ghtoken chmod 0755 /usr/local/bin/seed-toolcache.sh \
+ && (/usr/local/bin/seed-toolcache.sh || echo "warn: toolcache seed")
+
+# ── Runner entrypoint + transparent cache hooks (byte-identical wiring to
+#    runner-image/Dockerfile: same ACTIONS_RUNNER_HOOK_* env in
+#    run-ephemeral.sh, same hooks/cache-restore.sh + cache-save.sh). ──
+COPY runner-image/run-ephemeral.sh /usr/local/bin/run-ephemeral.sh
+COPY runner-image/hooks/ /opt/hooks/
+RUN chmod 0755 /usr/local/bin/run-ephemeral.sh /opt/hooks/*.sh
+
+# Sanity: essentials only (soft tools may be absent on a bad upstream day).
+# Also confirms the GPU userspace libs from the base image are visible.
+RUN test -f /opt/actions-runner/run.sh && git --version && node --version && go version && gh --version
+RUN ldconfig -p | grep -q libcudart || echo "warn: libcudart not found in ldconfig cache"
+
+WORKDIR /home/daytona
+USER daytona
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD test -f /opt/actions-runner/run.sh || exit 1

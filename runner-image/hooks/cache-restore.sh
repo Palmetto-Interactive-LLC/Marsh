@@ -10,8 +10,28 @@ LOCAL="${CACHE_LOCAL:-/home/daytona/.marsh-cache}"  # local POSIX cache root
 repo="${GITHUB_REPOSITORY:-unknown}"; repo="${repo//\//_}"
 base="${CACHE_VOL}/${repo}"
 
+# When the orchestrator mounts per-tool volumes at /cache/<mount>, tarballs
+# live at /cache/<mount>/<repo>/<name>.tgz. Legacy layout (single volume) is
+# /cache/<repo>/<name>.tgz; restore falls back to it so caches survive the
+# migration to per-tool volumes.
+vol_for() { # <name> -> per-tool mount dir ("" = legacy only)
+  case "$1" in
+    cargo) echo cargo ;;
+    go-mod|go-build) echo go ;;
+    npm) echo npm ;;
+    pip) echo pip ;;
+    sccache) echo sccache ;;
+    *) echo "" ;;
+  esac
+}
+
 restore() { # <name> <local-dir>
-  local name="$1" dir="$2" tgz="${base}/${1}.tgz"
+  local name="$1" dir="$2" mount tgz
+  mount="$(vol_for "$name")"
+  tgz="${base}/${name}.tgz"
+  if [ -n "$mount" ] && [ -d "${CACHE_VOL}/${mount}" ] && [ -f "${CACHE_VOL}/${mount}/${repo}/${name}.tgz" ]; then
+    tgz="${CACHE_VOL}/${mount}/${repo}/${name}.tgz"
+  fi
   mkdir -p "$dir"
   if [ -f "$tgz" ]; then
     tar -xzf "$tgz" -C "$dir" 2>/dev/null && echo "cache-restore: hit ${name}" || echo "cache-restore: bad ${name}"

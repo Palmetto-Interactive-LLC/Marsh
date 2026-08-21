@@ -793,24 +793,28 @@ SESSION_READ_MAX_ERRS = 3
 
 
 class Daytona:
-    def __init__(self, api_key: str, target: str, volume_id: str | None, base_labels: dict | None = None,
+    def __init__(self, api_key: str, target: str, volume_mounts=None, base_labels: dict | None = None,
                  network_policy: NetworkPolicy | None = None):
         self.sdk = DaytonaSDK(DaytonaConfig(api_key=api_key, target=target))
-        self.volume_id = volume_id
+        # Accept a bare volume id (legacy single-cache callers) or a list of
+        # (volume_id, mount_path) pairs resolved by resolve_volume_mounts().
+        if isinstance(volume_mounts, str):
+            volume_mounts = [(volume_mounts, "/cache")]
+        self.volume_mounts: list[tuple[str, str]] = list(volume_mounts or [])
         # Cost attribution: every sandbox carries org + size_class labels so
         # Daytona usage can be split per org (multi-instance/single-account deployments).
         self.base_labels = dict(base_labels or {})
         self.network_policy = network_policy or NetworkPolicy()
 
     def create_sandbox(self, snapshot: str, auto_stop_minutes: int, size_class: str = "",
-                       repository: str | None = None):
+                       repository: str | None = None, spot: bool = False):
         """New sandbox for one runner cycle. auto_stop_interval is minutes (verified
         against the installed SDK's CreateSandboxBaseParams field docstring, which
         matches the API's own field description) and is purely an orphan safety net:
         if the orchestrator crashes before this cycle tears the sandbox down, Daytona
         force-stops it on its own within auto_stop_minutes instead of it running
         (and billing) forever."""
-        volumes = [VolumeMount(volume_id=self.volume_id, mount_path="/cache")] if self.volume_id else []
+        volumes = [VolumeMount(volume_id=vid, mount_path=path) for vid, path in self.volume_mounts]
         labels = {"role": "gha-runner", **self.base_labels}
         if size_class:
             labels["size_class"] = size_class
@@ -818,10 +822,14 @@ class Daytona:
             # Repository scope supplies this from the static profile allowlist;
             # keeping it on the sandbox makes cost and orphan evidence auditable.
             labels["repository"] = repository
+        # `spot` is GPU-only capacity: Daytona may terminate the sandbox without
+        # notice to reclaim GPUs for on-demand use. Pass it only when the class
+        # opted in, so non-GPU fleets keep working against SDKs predating the field.
+        spot_kwargs = {"spot": True} if spot else {}
         sandbox = self.sdk.create(CreateSandboxFromSnapshotParams(
             snapshot=snapshot, labels=labels, volumes=volumes,
             auto_stop_interval=auto_stop_minutes, auto_delete_interval=0,
-            **self.network_policy.create_parameters()), timeout=180)
+            **spot_kwargs, **self.network_policy.create_parameters()), timeout=180)
         self.sdk.get(sandbox.id)  # ensure started
         return sandbox
 
@@ -1274,7 +1282,7 @@ def _stage_secs(start: float | None, end: float | None) -> float | None:
 def _declared_resources(cls: dict) -> dict[str, float | int]:
     """Return finite numeric resource declarations from the static profile."""
     resources: dict[str, float | int] = {}
-    for field_name in ("cpu", "memory_gib", "disk_gib"):
+    for field_name in ("cpu", "memory_gib", "disk_gib", "gpu"):
         value = cls.get(field_name)
         if (not isinstance(value, (int, float)) or isinstance(value, bool)
                 or not math.isfinite(value) or value < 0):
@@ -1361,6 +1369,38 @@ def resolve_volume_id(api_key: str, name: str) -> str | None:
             return v.get("id")
     log.warning("cache volume %r not found; runners will have no shared cache", name)
     return None
+
+
+# Mount names come from the fleet profile, but they become filesystem paths in
+# every sandbox; keep them to one conservative path component.
+VOLUME_MOUNT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+
+
+def resolve_volume_mounts(api_key: str, cfg: dict) -> list[tuple[str, str]]:
+    """Resolve every configured cache volume to a (volume_id, mount_path) pair.
+
+    ``[cache].volume`` mounts at ``/cache`` (the job hooks' tarball root).
+    Each ``[[volume]]`` entry mounts its named Daytona volume at
+    ``/cache/<mount>`` so per-tool caches (pip, npm, go, cargo, ...) live on
+    separate volumes instead of growing one shared bucket. A volume that does
+    not exist is skipped with a warning rather than failing the fleet start.
+    """
+    mounts: list[tuple[str, str]] = []
+    primary = cfg.get("cache", {}).get("volume", "") if cfg.get("cache") else ""
+    if primary:
+        vol_id = resolve_volume_id(api_key, primary)
+        if vol_id:
+            mounts.append((vol_id, "/cache"))
+    for entry in cfg.get("volume", []):
+        name = str(entry.get("name", ""))
+        mount = str(entry.get("mount", ""))
+        if not name or not VOLUME_MOUNT_NAME.fullmatch(mount):
+            log.warning("ignoring [[volume]] entry with invalid name/mount: name=%r mount=%r", name, mount)
+            continue
+        vol_id = resolve_volume_id(api_key, name)
+        if vol_id:
+            mounts.append((vol_id, f"/cache/{mount}"))
+    return mounts
 
 
 def is_fleet_sandbox(labels: object) -> bool:
@@ -1563,7 +1603,8 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
 
         sandbox_create_started_at = _cycle_now()
         sandbox_create_attempted = True
-        sandbox = dt.create_sandbox(cls["snapshot"], lc.auto_stop_minutes, cls.get("name", ""), repository)
+        sandbox = dt.create_sandbox(cls["snapshot"], lc.auto_stop_minutes, cls.get("name", ""), repository,
+                                    spot=bool(cls.get("spot", False)))
         # Count allocation from the request that successfully produced a
         # sandbox. A failed create or earlier GitHub JIT work must never be
         # multiplied into provider resource-hours.
@@ -2040,9 +2081,9 @@ def initialize_provider_runtime(api_key: str, cfg: dict, gh: GitHub, base_labels
     provider interaction in this one boundary so that property is auditable and
     unit-testable.
     """
-    vol_id = resolve_volume_id(api_key, cfg.get("cache", {}).get("volume", "")) if cfg.get("cache") else None
+    volume_mounts = resolve_volume_mounts(api_key, cfg)
     reap(gh, DaytonaSDK(DaytonaConfig(api_key=api_key, target=cfg["daytona"]["target"])))
-    return Daytona(api_key, cfg["daytona"]["target"], vol_id, base_labels=base_labels,
+    return Daytona(api_key, cfg["daytona"]["target"], volume_mounts, base_labels=base_labels,
                    network_policy=network_policy)
 
 

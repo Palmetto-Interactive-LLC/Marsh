@@ -93,6 +93,29 @@ def restricted_network_profile() -> str:
     ).lstrip()
 
 
+def volume_profile(volumes: str, cache: str = '[cache]\nvolume = "shared"\n') -> str:
+    """An organization profile with optional [cache] and [[volume]] tables."""
+    return organization_profile() + "\n" + cache + volumes
+
+
+def gpu_class(gpu: str = "gpu = 1", spot: str = "spot = true", min_idle: int = 0,
+              extra: str = "") -> str:
+    """Append a third, GPU-flavored size class to a valid organization profile."""
+    return organization_profile() + textwrap.dedent(
+        f"""
+        [[size_class]]
+        name = "gpu"
+        labels = ["self-hosted", "daytona", "gpu"]
+        snapshot = "gpu"
+        {gpu}
+        {spot}
+        min_idle = {min_idle}
+        max = 2
+        {extra}
+        """
+    )
+
+
 class FleetConfigTests(unittest.TestCase):
     def write_profile(self, content: str) -> Path:
         temporary = tempfile.TemporaryDirectory()
@@ -343,6 +366,144 @@ class FleetConfigTests(unittest.TestCase):
             """).strip() + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "duplicate GitHub owner .* in 'organization' scope"):
                 fleet_config.load_fleets(root)
+
+
+class CacheVolumeTests(unittest.TestCase):
+    """[[volume]] mounts become sandbox paths, so the gate is a closed allowlist."""
+
+    def write_profile(self, content: str) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "runners.toml"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def validate(self, content: str) -> dict:
+        return fleet_config.validate_profile(
+            self.write_profile(content), "organization", "example-org"
+        )
+
+    def test_routed_per_tool_volumes_validate_and_are_preserved(self) -> None:
+        profile = self.validate(volume_profile(
+            '[[volume]]\nname = "cache-pip"\nmount = "pip"\n\n'
+            '[[volume]]\nname = "cache-cargo"\nmount = "cargo"\n'
+        ))
+        self.assertEqual(
+            [(entry["name"], entry["mount"]) for entry in profile["volume"]],
+            [("cache-pip", "pip"), ("cache-cargo", "cargo")],
+        )
+
+    def test_per_tool_volumes_require_the_shared_fallback_volume(self) -> None:
+        # Without [cache] every tool the hooks do not route would cache to
+        # ephemeral container storage instead of any volume at all.
+        with self.assertRaisesRegex(ValueError, r"requires a \[cache\].volume fallback"):
+            self.validate(volume_profile(
+                '[[volume]]\nname = "cache-pip"\nmount = "pip"\n', cache=""
+            ))
+
+    def test_mount_the_job_hooks_do_not_route_is_rejected(self) -> None:
+        # A mount the hooks never write to is billed on every sandbox and stays
+        # empty forever, so the gate refuses it rather than wasting it silently.
+        for mount in ("buildx", "toolcache"):
+            with self.subTest(mount=mount):
+                with self.assertRaisesRegex(ValueError, "not routed by the job hooks"):
+                    self.validate(volume_profile(
+                        f'[[volume]]\nname = "cache-x"\nmount = "{mount}"\n'
+                    ))
+
+    def test_duplicate_volume_names_and_mounts_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"duplicate \[\[volume\]\].mount"):
+            self.validate(volume_profile(
+                '[[volume]]\nname = "a"\nmount = "pip"\n\n'
+                '[[volume]]\nname = "b"\nmount = "pip"\n'
+            ))
+        with self.assertRaisesRegex(ValueError, r"duplicate \[\[volume\]\].name"):
+            self.validate(volume_profile(
+                '[[volume]]\nname = "a"\nmount = "pip"\n\n'
+                '[[volume]]\nname = "a"\nmount = "cargo"\n'
+            ))
+
+    def test_unknown_keys_in_volume_and_cache_tables_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported keys"):
+            self.validate(volume_profile(
+                '[[volume]]\nname = "a"\nmount = "pip"\nsize_gib = 10\n'
+            ))
+        with self.assertRaisesRegex(ValueError, "unsupported keys"):
+            self.validate(volume_profile(
+                '[[volume]]\nname = "a"\nmount = "pip"\n',
+                cache='[cache]\nvolume = "shared"\nregion = "us"\n',
+            ))
+
+    def test_mount_must_be_one_safe_path_component(self) -> None:
+        # A traversal or absolute mount must fail on the shape of the value, not
+        # merely on allowlist membership.
+        for mount in ("../evil", "/etc", "pip/sub"):
+            with self.subTest(mount=mount):
+                with self.assertRaisesRegex(ValueError, r"invalid \[\[volume\]\].mount"):
+                    self.validate(volume_profile(
+                        f'[[volume]]\nname = "a"\nmount = "{mount}"\n'
+                    ))
+
+    def test_empty_volume_array_is_rejected(self) -> None:
+        # A bare key must lead the profile: appended after the [[size_class]]
+        # tables TOML would absorb it into the last one instead.
+        with self.assertRaisesRegex(ValueError, r"\[\[volume\]\] must be a non-empty array"):
+            self.validate("volume = []\n" + volume_profile(""))
+
+
+class GpuSizeClassTests(unittest.TestCase):
+    """gpu and spot are provider requests, so the gate types them before a host does."""
+
+    def write_profile(self, content: str) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / "runners.toml"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def validate(self, content: str) -> dict:
+        return fleet_config.validate_profile(
+            self.write_profile(content), "organization", "example-org"
+        )
+
+    def test_valid_spot_gpu_class_validates(self) -> None:
+        profile = self.validate(gpu_class())
+        gpu = next(item for item in profile["size_class"] if item["name"] == "gpu")
+        self.assertEqual((gpu["gpu"], gpu["spot"], gpu["min_idle"]), (1, True, 0))
+
+    def test_gpu_must_be_a_non_negative_integer(self) -> None:
+        for declaration in ('gpu = "1"', "gpu = -1", "gpu = true", "gpu = 1.5"):
+            with self.subTest(declaration=declaration):
+                with self.assertRaisesRegex(ValueError, "gpu must be a non-negative integer"):
+                    self.validate(gpu_class(gpu=declaration))
+
+    def test_spot_must_be_a_boolean(self) -> None:
+        for declaration in ('spot = "yes"', "spot = 1"):
+            with self.subTest(declaration=declaration):
+                with self.assertRaisesRegex(ValueError, "spot must be a boolean"):
+                    self.validate(gpu_class(spot=declaration))
+
+    def test_spot_cannot_hold_a_warm_floor(self) -> None:
+        # Preemptible capacity is reclaimed without notice, so a floor held on it
+        # is a floor the fleet does not actually have.
+        with self.assertRaisesRegex(ValueError, "must set min_idle = 0"):
+            self.validate(gpu_class(
+                min_idle=1, extra='warm_floor_reason = "documented"'
+            ))
+
+    def test_spot_requires_gpu_capacity(self) -> None:
+        # Spot is GPU-only in Daytona; requesting it for a CPU class would do
+        # nothing at all rather than fail loudly.
+        for declaration in ("gpu = 0", ""):
+            with self.subTest(declaration=declaration):
+                with self.assertRaisesRegex(ValueError, "must declare gpu >= 1"):
+                    self.validate(gpu_class(gpu=declaration))
+
+    def test_gpu_without_spot_is_on_demand_capacity(self) -> None:
+        profile = self.validate(gpu_class(spot=""))
+        gpu = next(item for item in profile["size_class"] if item["name"] == "gpu")
+        self.assertEqual(gpu["gpu"], 1)
+        self.assertNotIn("spot", gpu)
 
 
 if __name__ == "__main__":

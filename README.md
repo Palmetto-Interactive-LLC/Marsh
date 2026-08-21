@@ -199,10 +199,16 @@ same host that alerts when the fleet stops working:
 
 Alerts POST to any webhook (ntfy-style or JSON), deduplicate against a state
 file so persistent failures re-page on a configurable cadence instead of every
-tick, and a recovery notice is sent when a finding clears. An optional
-heartbeat URL is fetched on every all-clear pass as a dead-man's switch — if
-the watchdog or the whole host dies, the missing heartbeat is the page. A
-second subcommand, `usage-report`, posts per-snapshot cycle counts, job/idle
+tick, and a recovery notice is sent when a finding clears.
+
+Note what this design does not cover: the watchdog runs on the host it
+watches, so it cannot report that host's death. If the box goes down the
+alerting goes down with it, and the resulting silence is indistinguishable
+from health. Detecting a dead host needs something outside that failure
+domain, which Marsh deliberately leaves to the operator's own monitoring
+rather than shipping a half-measure here.
+
+A second subcommand, `usage-report`, posts per-snapshot cycle counts, job/idle
 outcomes, average and p95 durations, and declared allocation-hours from the
 orchestrator journals. The resource totals match reserved CPU/RAM/disk
 capacity only when every cycle has a confirmed cleanup boundary; incomplete
@@ -215,6 +221,25 @@ the orchestrator. Keep its active instance list, alert destination, and host
 configuration private; public examples should describe only the schema and
 non-secret behavior.
 
+## GPU Runners
+
+Daytona supports GPU sandboxes, including preemptible spot capacity. Marsh
+exposes them as a normal size class:
+
+1. Build a GPU runner image (CUDA, drivers-as-needed, and the Actions runner)
+   and push it to your connected registry.
+2. Register it with fixed GPU resources:
+   `infra/snapshots/register-gpu-snapshot.sh marsh-runner-gpu-v1 <image-ref> 1 8 32 50`
+3. Add a `[[size_class]]` with a distinguishing label (for example
+   `[self-hosted, daytona, gpu]`), `gpu = 1`, and optionally `spot = true`.
+
+With `spot = true` the sandbox may be terminated at any moment without
+warning to free GPU capacity for on-demand use. GitHub marks the interrupted
+job failed; because Marsh runners are ephemeral and one-job, a re-run is the
+recovery path. Route only retry-safe workloads (training smoke tests,
+batch evaluation, embedding jobs) at a spot GPU label, and keep `min_idle = 0`
+so unused GPU capacity is never reserved.
+
 ## Cache Model
 
 Daytona volumes are S3-backed FUSE mounts. Whole-file writes work, but append and
@@ -226,6 +251,10 @@ Instead:
 - stable tools live in the runner snapshot;
 - job hooks restore cache tarballs from the volume to local disk at job start;
 - job hooks save tarballs back to the volume at job completion;
+- optional `[[volume]]` profile entries mount additional per-tool volumes at
+  `/cache/<mount>` (pip, npm, go, cargo, sccache); the hooks route each tool's
+  tarball to its own volume and fall back to the legacy single-volume layout,
+  so enabling them is a safe migration;
 - Docker layer cache should use a registry-backed cache, not the FUSE volume.
 
 This keeps the runner filesystem normal while preserving cache reuse across
