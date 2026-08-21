@@ -11,10 +11,6 @@
 url = ""
 format = "ntfy"
 token_env = "MARSH_NOTIFY_TOKEN"
-# Optional dead-man's switch (e.g. a Better Stack heartbeat): GET on every
-# all-clear pass. If the watchdog or the whole host dies, the missing
-# heartbeat is the page.
-heartbeat_url = ""
 
 [checks]
 stuck_queue_minutes = 10       # queued job with fleet labels older than this -> alert
