@@ -40,7 +40,7 @@ RUN install -m0755 -d /etc/apt/keyrings \
 # shellcheck (also a scanner) — best-effort, not in every base's apt repo.
 RUN apt-get update && apt-get install -y --no-install-recommends shellcheck 2>/dev/null || true; rm -rf /var/lib/apt/lists/* || true
 
-# ── gh CLI (base 0.8.0 does NOT ship it; PINNED for reproducible builds — no
+# ── gh CLI (base does NOT ship it; PINNED for reproducible builds — no
 #    unauthenticated GitHub API calls during build, which rate-limit per host) ──
 ARG GH_VERSION=2.95.0
 RUN curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" | tar -xz -C /tmp \
