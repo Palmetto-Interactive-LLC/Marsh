@@ -125,7 +125,7 @@ placeholder snapshot name replaced by the real registered one.
   on-demand use. Only route jobs to the `gpu` label that are safely retryable
   (idempotent, checkpointed, or cheap to rerun) — a job with no retry story
   should not carry this label.
-- **UNVERIFIED: exact UID/GID of the `daytona` user inside `daytonaio/sandbox:0.8.0`.**
+- **UNVERIFIED: exact UID/GID of the `daytona` user inside `daytonaio/sandbox:0.9.0`.**
   `Dockerfile.gpu` creates the user fresh (`useradd -m`) since the CUDA base
   doesn't ship it; the assigned UID may not match the base image used by
   `runner-image/Dockerfile`. Only matters if something depends on a stable

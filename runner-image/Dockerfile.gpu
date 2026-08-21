@@ -7,7 +7,7 @@
 # file against runner-image/Dockerfile when bumping either one.
 #
 # Base: nvidia/cuda:12.9.2-cudnn-runtime-ubuntu22.04 (pinned tag, verified
-# published on Docker Hub), NOT daytonaio/sandbox:0.8.0. Runtime (not -devel):
+# published on Docker Hub), NOT daytonaio/sandbox:0.9.0. Runtime (not -devel):
 # GPU CI jobs here are expected to run pre-built ML/CUDA wheels (torch,
 # onnxruntime-gpu, etc. via pip, cached through the existing pip cache hook) —
 # not compile CUDA kernels from source. If a workflow ever needs `nvcc` this
@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Non-root `daytona` user. daytonaio/sandbox provisions this user itself; the
 # CUDA base does not, so it is created here. UNVERIFIED: the exact UID/GID
-# daytonaio/sandbox:0.8.0 assigns to `daytona` (commonly 1000 as the first
+# daytonaio/sandbox:0.9.0 assigns to `daytona` (commonly 1000 as the first
 # non-root user, but not confirmed against that image) — `useradd -m` below
 # takes the next available UID, which may not match. Only matters if anything
 # depends on a stable UID across the two runner images (e.g. cache-volume
