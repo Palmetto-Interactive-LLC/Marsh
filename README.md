@@ -199,10 +199,16 @@ same host that alerts when the fleet stops working:
 
 Alerts POST to any webhook (ntfy-style or JSON), deduplicate against a state
 file so persistent failures re-page on a configurable cadence instead of every
-tick, and a recovery notice is sent when a finding clears. An optional
-heartbeat URL is fetched on every all-clear pass as a dead-man's switch — if
-the watchdog or the whole host dies, the missing heartbeat is the page. A
-second subcommand, `usage-report`, posts per-snapshot cycle counts, job/idle
+tick, and a recovery notice is sent when a finding clears.
+
+Note what this design does not cover: the watchdog runs on the host it
+watches, so it cannot report that host's death. If the box goes down the
+alerting goes down with it, and the resulting silence is indistinguishable
+from health. Detecting a dead host needs something outside that failure
+domain, which Marsh deliberately leaves to the operator's own monitoring
+rather than shipping a half-measure here.
+
+A second subcommand, `usage-report`, posts per-snapshot cycle counts, job/idle
 outcomes, average and p95 durations, and declared allocation-hours from the
 orchestrator journals. The resource totals match reserved CPU/RAM/disk
 capacity only when every cycle has a confirmed cleanup boundary; incomplete
