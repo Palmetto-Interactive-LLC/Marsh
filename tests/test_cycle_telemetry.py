@@ -782,5 +782,118 @@ interval_secs = 1
         self.assertTrue(TestControl.instance.admission.is_set())
 
 
+class RecordingSDK:
+    """Minimal stand-in for the Daytona SDK create/get surface."""
+
+    def __init__(self) -> None:
+        self.params = None
+
+    def create(self, params, timeout=None):
+        self.params = params
+        self.timeout = timeout
+        return type("Sandbox", (), {"id": "sandbox-1"})()
+
+    def get(self, sandbox_id):  # started-check only
+        return None
+
+
+def daytona_with(sdk, volume_mounts) -> object:
+    client = orch.Daytona("test-only-placeholder", "target", volume_mounts)
+    client.sdk = sdk
+    return client
+
+
+class VolumeMountResolutionTests(unittest.TestCase):
+    """Cache volumes are resolved once at startup, and a missing one is not fatal."""
+
+    def resolve(self, cfg: dict, known: dict[str, str]) -> list[tuple[str, str]]:
+        with patch.object(orch, "resolve_volume_id",
+                          side_effect=lambda _key, name: known.get(name)):
+            return orch.resolve_volume_mounts("test-only-placeholder", cfg)
+
+    def test_shared_volume_mounts_first_then_each_per_tool_volume(self) -> None:
+        mounts = self.resolve(
+            {"cache": {"volume": "shared"},
+             "volume": [{"name": "vol-pip", "mount": "pip"},
+                        {"name": "vol-cargo", "mount": "cargo"}]},
+            {"shared": "id-shared", "vol-pip": "id-pip", "vol-cargo": "id-cargo"},
+        )
+        self.assertEqual(mounts, [
+            ("id-shared", "/cache"),
+            ("id-pip", "/cache/pip"),
+            ("id-cargo", "/cache/cargo"),
+        ])
+
+    def test_unresolvable_volume_is_skipped_without_failing_the_fleet(self) -> None:
+        mounts = self.resolve(
+            {"cache": {"volume": "shared"},
+             "volume": [{"name": "missing", "mount": "pip"},
+                        {"name": "vol-npm", "mount": "npm"}]},
+            {"shared": "id-shared", "vol-npm": "id-npm"},
+        )
+        self.assertEqual(mounts, [("id-shared", "/cache"), ("id-npm", "/cache/npm")])
+
+    def test_invalid_mount_is_skipped_and_warned_without_resolving_it(self) -> None:
+        with self.assertLogs("marsh-orch", level="WARNING") as logs:
+            mounts = self.resolve(
+                {"cache": {"volume": "shared"},
+                 "volume": [{"name": "vol-evil", "mount": "../evil"},
+                            {"name": "vol-pip", "mount": "pip"}]},
+                {"shared": "id-shared", "vol-evil": "id-evil", "vol-pip": "id-pip"},
+            )
+        self.assertEqual(mounts, [("id-shared", "/cache"), ("id-pip", "/cache/pip")])
+        self.assertTrue(any("invalid name/mount" in line for line in logs.output))
+
+    def test_profile_without_any_cache_configuration_resolves_to_no_mounts(self) -> None:
+        self.assertEqual(self.resolve({}, {}), [])
+
+
+class SandboxCreateParameterTests(unittest.TestCase):
+    """Sandbox creation must stay compatible with fleets that opted into nothing."""
+
+    def test_legacy_bare_volume_id_still_mounts_at_the_cache_root(self) -> None:
+        client = orch.Daytona("test-only-placeholder", "target", "legacy-id")
+        self.assertEqual(client.volume_mounts, [("legacy-id", "/cache")])
+
+    def test_spot_is_absent_unless_the_size_class_opted_in(self) -> None:
+        # Passing spot=False would break against an SDK predating the field, so
+        # the kwarg must not appear at all for non-spot classes.
+        sdk = RecordingSDK()
+        daytona_with(sdk, []).create_sandbox("snap", 120, "default")
+        self.assertNotIn("spot", sdk.params.kwargs)
+
+    def test_spot_is_requested_when_the_size_class_opted_in(self) -> None:
+        sdk = RecordingSDK()
+        daytona_with(sdk, []).create_sandbox("snap", 120, "gpu", spot=True)
+        self.assertIs(sdk.params.kwargs["spot"], True)
+
+    def test_every_resolved_mount_becomes_one_volume_mount(self) -> None:
+        sdk = RecordingSDK()
+        daytona_with(sdk, [("id-shared", "/cache"), ("id-pip", "/cache/pip")]) \
+            .create_sandbox("snap", 120, "default")
+        self.assertEqual(
+            [(mount.kwargs["volume_id"], mount.kwargs["mount_path"])
+             for mount in sdk.params.kwargs["volumes"]],
+            [("id-shared", "/cache"), ("id-pip", "/cache/pip")],
+        )
+
+
+class DeclaredResourceTests(unittest.TestCase):
+    """Telemetry reports only finite, non-negative numeric declarations."""
+
+    def test_gpu_is_reported_alongside_the_other_declarations(self) -> None:
+        self.assertEqual(
+            orch._declared_resources(
+                {"cpu": 8, "memory_gib": 32, "disk_gib": 50, "gpu": 1}),
+            {"cpu": 8, "memory_gib": 32, "disk_gib": 50, "gpu": 1},
+        )
+
+    def test_unusable_declarations_are_dropped_for_every_field(self) -> None:
+        for field in ("cpu", "memory_gib", "disk_gib", "gpu"):
+            for value in ("1", True, -1, float("inf"), float("nan"), None):
+                with self.subTest(field=field, value=value):
+                    self.assertNotIn(field, orch._declared_resources({field: value}))
+
+
 if __name__ == "__main__":
     unittest.main()
