@@ -22,7 +22,7 @@ jobs:
   codeql-public-repo-only:
     name: "CodeQL PUBLIC-REPO-ONLY"
     if: github.event.repository.private == false
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, daytona]
     permissions:
       actions: read
       contents: read
