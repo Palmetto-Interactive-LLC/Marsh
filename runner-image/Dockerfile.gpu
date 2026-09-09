@@ -34,7 +34,7 @@
 # runner-image/Dockerfile):
 #   infra/snapshots/register-gpu-snapshot.sh marsh-runner-gpu-v1 \
 #     ghcr.io/palmetto-interactive-llc/marsh-runner-gpu:v1 1 8 32 50
-FROM nvidia/cuda:12.9.2-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:13.3.1-cudnn-runtime-ubuntu22.04
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
