@@ -5,6 +5,30 @@ All notable changes to Marsh are documented in this file.
 The format is based on Keep a Changelog, and this project uses Calendar
 Versioning: `YYYY.M.PATCH`.
 
+## [Unreleased]
+
+Runner-boundary hardening from OPP-524 (Quarry-IO/quarry). Independently
+implementable now; the remaining OPP-524 scope (pre-token BuildKit source-cache
+boundary, fd-sealed JIT handoff, exact-host JIT broker) is gated on OPP-525 and
+on an explicit Marsh deployment-authority grant -- see that issue.
+
+### Changed
+
+- `[lifecycle].job_max_secs` is now a hard 7200s ceiling, enforced fail-closed
+  both at fleet-profile validation (`scripts/fleet_config.py`) and at
+  orchestrator startup (`orchestrator/orchestrator.py`), not merely a default.
+  A profile requesting more no longer silently runs longer; it refuses to
+  start/validate.
+- The runner image no longer widens `/var/run/docker.sock` to world-writable
+  `0666`. `daytona`'s docker-group membership already grants it access at
+  dockerd's own default `0660` mode.
+- Replaced the runner image's inherited blanket passwordless sudo with an
+  exact-command NOPASSWD rule scoped to one fixed root-owned launcher script
+  (`runner-image/marsh-start-dockerd.sh`), the only thing `daytona` may run as
+  root. Docker-group/DinD access itself is unchanged (still load-bearing for
+  build jobs; narrowing that is separate, larger scope tracked under OPP-524/
+  OPP-525).
+
 ## [2026.7.3] - 2026-07-17
 
 Pickup latency, debug, and observability improvements for self-hosted runners.

@@ -93,6 +93,10 @@ NETWORK_DOMAIN = re.compile(r"^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\
 RUNNER_FLEET_LABEL_PREFIX = "marsh-fleet-"
 RATE_LIMIT_BACKOFF_INITIAL_SECS = 60.0
 RATE_LIMIT_BACKOFF_MAX_SECS = 900.0
+# OPP-524: hard ceiling on how long any one JIT-registered runner session may
+# stay busy before the reconciler force-tears it down. A misconfigured or
+# tampered runners.toml must fail closed at startup, not silently run longer.
+JOB_MAX_SECS_CEILING = 7200
 START_QUIESCED_ENV = "MARSH_START_QUIESCED"
 
 
@@ -769,7 +773,7 @@ def routing_required_labels(cfg: dict) -> frozenset[str]:
 RUNNER_CMD = r"""bash -c '
 if command -v dockerd >/dev/null 2>&1 && command -v docker >/dev/null 2>&1; then
   if ! docker info >/dev/null 2>&1; then
-    sudo -n sh -c "nohup dockerd >/var/log/dockerd.log 2>&1 &" 2>/dev/null || true
+    sudo -n /usr/local/bin/marsh-start-dockerd.sh 2>/dev/null || true
     for _ in $(seq 1 60); do
       if docker info >/dev/null 2>&1; then
         break
@@ -2087,6 +2091,21 @@ def initialize_provider_runtime(api_key: str, cfg: dict, gh: GitHub, base_labels
                    network_policy=network_policy)
 
 
+def resolve_job_max_secs(lcfg: dict) -> int:
+    """Read [lifecycle].job_max_secs, failing closed above the OPP-524 ceiling.
+
+    A misconfigured or tampered runners.toml must refuse to start rather than
+    silently run a longer-lived JIT runner session than the boundary allows.
+    """
+    configured = int(lcfg.get("job_max_secs", JOB_MAX_SECS_CEILING))
+    if configured > JOB_MAX_SECS_CEILING:
+        raise RuntimeError(
+            f"[lifecycle].job_max_secs={configured} exceeds the "
+            f"{JOB_MAX_SECS_CEILING}s OPP-524 runner-boundary ceiling"
+        )
+    return configured
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     with open(os.environ.get("MARSH_RUNNER_CONFIG", "/etc/marsh/runners.toml"), "rb") as fh:
@@ -2127,7 +2146,7 @@ def main() -> None:
 
     lcfg = cfg.get("lifecycle", {})
     lc = Lifecycle(
-        job_max_secs=int(lcfg.get("job_max_secs", 3600)),
+        job_max_secs=resolve_job_max_secs(lcfg),
         auto_stop_minutes=int(lcfg.get("auto_stop_minutes", 120)),
         demand_idle_secs=int(lcfg.get("demand_idle_secs", 300)),
         idle_refresh_secs=int(lcfg.get("idle_refresh_secs", 1800)),

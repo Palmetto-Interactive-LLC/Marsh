@@ -232,6 +232,20 @@ class FleetConfigTests(unittest.TestCase):
                 "example-org",
             )
 
+    def test_job_max_secs_within_ceiling_is_accepted(self) -> None:
+        profile = organization_profile() + "\n[lifecycle]\njob_max_secs = 7200\n"
+        validated = fleet_config.validate_profile(
+            self.write_profile(profile), "organization", "example-org"
+        )
+        self.assertEqual(validated["lifecycle"]["job_max_secs"], 7200)
+
+    def test_job_max_secs_over_ceiling_is_rejected(self) -> None:
+        profile = organization_profile() + "\n[lifecycle]\njob_max_secs = 7201\n"
+        with self.assertRaisesRegex(ValueError, "must not exceed 7200"):
+            fleet_config.validate_profile(
+                self.write_profile(profile), "organization", "example-org"
+            )
+
     def test_repository_profile_rejects_excessive_poll_frequency(self) -> None:
         too_fast = repository_profile() + "\n[poller]\ninterval_secs = 20\n"
         with self.assertRaisesRegex(ValueError, "at least 60"):
