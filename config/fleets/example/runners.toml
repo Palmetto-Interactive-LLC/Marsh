@@ -64,7 +64,9 @@ auto_stop_minutes = 120
 auto_delete_interval = 0
 idle_refresh_secs = 1800
 demand_idle_secs = 300
-job_max_secs = 3600
+# OPP-524: 7200s is the hard ceiling the orchestrator and fleet_config.py both
+# enforce (fail-closed at startup/validation) -- this is not just a default.
+job_max_secs = 7200
 # Keep a failed sandbox briefly for Daytona SSH debug (0 = off).
 hold_on_failure_secs = 0
 # Adaptive cycle poll: fast for 90s after runner online, then settle.

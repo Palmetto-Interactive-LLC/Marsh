@@ -49,6 +49,10 @@ VOLUME_MOUNT = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 # cache, not on the FUSE volume (see the cache model in README.md).
 CACHE_MOUNTS = frozenset({"cargo", "go", "npm", "pip", "sccache"})
 NETWORK_POLICY = "deny-by-default"
+# OPP-524: no single JIT-registered runner session may exceed 7200s, regardless
+# of what a fleet profile requests. This is a hard ceiling, not a default --
+# a profile asking for more is rejected at validation time, not silently capped.
+JOB_MAX_SECS_CEILING = 7200
 DOMAIN_NAME = re.compile(
     r"^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
 )
@@ -340,6 +344,11 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
                 fail(f"{profile_file}: [lifecycle].{key} must be a non-negative integer")
             if key in {"idle_poll_secs", "fast_idle_poll_secs", "busy_poll_secs"} and value < 1:
                 fail(f"{profile_file}: [lifecycle].{key} must be at least 1")
+            if key == "job_max_secs" and value > JOB_MAX_SECS_CEILING:
+                fail(
+                    f"{profile_file}: [lifecycle].job_max_secs must not exceed "
+                    f"{JOB_MAX_SECS_CEILING} (OPP-524 runner-boundary ceiling)"
+                )
 
     watchdog = profile.get("watchdog")
     if watchdog is not None:

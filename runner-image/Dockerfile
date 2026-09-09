@@ -102,8 +102,22 @@ RUN --mount=type=secret,id=ghtoken chmod 0755 /usr/local/bin/seed-toolcache.sh \
 
 # ── Runner entrypoint + transparent cache hooks ─────────────────────────────
 COPY runner-image/run-ephemeral.sh /usr/local/bin/run-ephemeral.sh
+COPY runner-image/marsh-start-dockerd.sh /usr/local/bin/marsh-start-dockerd.sh
 COPY runner-image/hooks/ /opt/hooks/
-RUN chmod 0755 /usr/local/bin/run-ephemeral.sh /opt/hooks/*.sh
+RUN chmod 0755 /usr/local/bin/run-ephemeral.sh /usr/local/bin/marsh-start-dockerd.sh /opt/hooks/*.sh
+
+# OPP-524: the base image (daytonaio/sandbox) grants `daytona` blanket
+# passwordless sudo. Replace that with an exact-command NOPASSWD rule scoped to
+# the one root action this image actually needs (starting dockerd), and lock
+# down the general sudoers files so the base image's broader grant cannot be
+# reached. This does not remove root-equivalent Docker-group / DinD access
+# (both are load-bearing for `docker build`/buildx jobs and out of scope for
+# this hardening pass -- see OPP-524/OPP-525), only the unrestricted `sudo -n
+# <anything>` surface.
+RUN rm -f /etc/sudoers.d/* \
+ && echo 'daytona ALL=(root) NOPASSWD: /usr/local/bin/marsh-start-dockerd.sh' > /etc/sudoers.d/marsh-dockerd \
+ && chmod 0440 /etc/sudoers.d/marsh-dockerd \
+ && visudo -cf /etc/sudoers.d/marsh-dockerd
 
 # Sanity: essentials only (soft tools may be absent on a bad upstream day).
 RUN test -f /opt/actions-runner/run.sh && git --version && node --version && go version && gh --version

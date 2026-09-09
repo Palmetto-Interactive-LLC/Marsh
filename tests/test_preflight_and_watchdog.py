@@ -30,6 +30,18 @@ REPOSITORY_CONFIG = {
 }
 
 
+class JobMaxSecsCeilingTests(unittest.TestCase):
+    def test_default_is_the_ceiling(self) -> None:
+        self.assertEqual(orch.resolve_job_max_secs({}), orch.JOB_MAX_SECS_CEILING)
+
+    def test_at_ceiling_is_accepted(self) -> None:
+        self.assertEqual(orch.resolve_job_max_secs({"job_max_secs": 7200}), 7200)
+
+    def test_over_ceiling_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "exceeds the 7200s"):
+            orch.resolve_job_max_secs({"job_max_secs": 7201})
+
+
 class PreflightAndWatchdogTests(unittest.TestCase):
     def test_daytona_target_preflight_requires_exact_visible_target(self) -> None:
         requests = []

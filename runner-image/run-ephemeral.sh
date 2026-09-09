@@ -44,15 +44,18 @@ if [[ -z "${RUNNER_JITCONFIG:-}" ]]; then
 fi
 
 # Start the Docker daemon (best-effort, non-fatal) so `docker build`/buildx and
-# container-based actions work. Daytona sandboxes allow DinD; daytona has passwordless
-# sudo and is in the docker group. A job that doesn't use docker is unaffected.
+# container-based actions work. Daytona sandboxes allow DinD; the daytona user is
+# in the docker group and has a scoped, exact-command NOPASSWD sudo rule for the
+# dockerd launcher only (see runner-image/Dockerfile) -- not blanket passwordless
+# sudo. A job that doesn't use docker is unaffected. The socket is left at
+# dockerd's own default group-owned mode (0660, group=docker); it is never
+# widened to world-writable (0666) -- daytona already has group access.
 if command -v dockerd >/dev/null 2>&1 && [[ ! -S /var/run/docker.sock ]]; then
-  sudo -n sh -c 'nohup dockerd >/var/log/dockerd.log 2>&1 &' 2>/dev/null || true
+  sudo -n /usr/local/bin/marsh-start-dockerd.sh 2>/dev/null || true
   for _ in $(seq 1 20); do
     if [[ -S /var/run/docker.sock ]]; then break; fi
     sleep 1
   done
-  sudo -n chmod 666 /var/run/docker.sock 2>/dev/null || true
 fi
 
 # run.sh ships without the +x bit in the runner tarball; invoke via bash (absolute path).
