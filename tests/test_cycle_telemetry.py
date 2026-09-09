@@ -49,7 +49,8 @@ class GitHub:
     def __init__(self, repository: str | None = None) -> None:
         self.runner = orch.RunnerRef(7, repository)
 
-    def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None):
+    def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None,
+                 name: str | None = None):
         return self.runner, "jit"
 
     def runner_busy(self, runner) -> bool:
@@ -382,7 +383,7 @@ class CycleTelemetryTests(unittest.TestCase):
 
         event = telemetry_record(logs.output)
         self.assertEqual(event["outcome"], "failed")
-        self.assertEqual(event["termination_reason"], "cycle_failed")
+        self.assertEqual(event["termination_reason"], "create_failed")
         self.assertIsNone(event["sandbox_started_at"])
         self.assertIsNone(event["sandbox_ready_at"])
         self.assertIsNone(event["sandbox_create_secs"])
@@ -399,7 +400,8 @@ class CycleTelemetryTests(unittest.TestCase):
 
     def test_jit_failure_is_known_zero_allocation_before_create_attempt(self) -> None:
         class GitHubFails(GitHub):
-            def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None):
+            def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None,
+                 name: str | None = None):
                 raise RuntimeError("GitHub unavailable")
 
         class Daytona:

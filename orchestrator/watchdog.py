@@ -514,9 +514,10 @@ def summarize_cycle_telemetry(events: list[dict]) -> list[str]:
             outcome = record.get("outcome")
             outcomes[outcome if outcome in outcomes else "unknown"] += 1
             cleanup_status = record.get("cleanup_status")
-            if cleanup_status == "create_not_attempted":
-                # No Daytona allocation existed, so this is a known zero rather
-                # than a missing sample.
+            if cleanup_status in ("create_not_attempted", "create_failed"):
+                # No Daytona allocation existed (never requested, or the
+                # provider confirmed the refused create allocated nothing), so
+                # this is a known zero rather than a missing sample.
                 allocated_records += 1
                 continue
             if cleanup_status != "deleted":
