@@ -12,6 +12,36 @@ implementable now; the remaining OPP-524 scope (pre-token BuildKit source-cache
 boundary, fd-sealed JIT handoff, exact-host JIT broker) is gated on OPP-525 and
 on an explicit Marsh deployment-authority grant -- see that issue.
 
+### Fixed
+
+- A sandbox create that failed (a provider capacity refusal such as Daytona's
+  `Total CPU limit exceeded`, a create timeout, or a network error) left the
+  cycle in `CLEANUP_PENDING` for the life of the process, permanently
+  consuming one `max` slot of its size class and starving the class of real
+  capacity. The orchestrator now labels every sandbox with its cycle id,
+  resolves a failed create against provider truth (absent -> slot released,
+  present -> adopted and deleted), treats a GitHub error response to a JIT
+  mint as a confirmed non-registration, and retries every remaining
+  `CLEANUP_PENDING` cycle each tick until the provider confirms it clean.
+- The reconciler re-scanned GitHub on every cycle state change, turning a
+  burst into a request storm that could exhaust the App's primary rate limit
+  and freeze spawning for the whole cooldown. Scans are now spaced by
+  `[poller].min_tick_secs` (default 5) and list requests use ETag conditional
+  GETs, which GitHub does not charge when unchanged.
+- The orphan sweep no longer aborts on the first sandbox the provider already
+  removed; it treats "not found" as deleted and finishes the pass.
+
+### Changed
+
+- A provider capacity refusal pauses spawning for 30s
+  (`PROVIDER_CAPACITY_BACKOFF_SECS`) instead of minting a doomed JIT
+  registration per queued job. Telemetry records
+  `termination_reason = provider_capacity` and `cleanup_status = create_failed`
+  (a known zero allocation for `usage-report`). See docs/ORCHESTRATOR.md,
+  "Provider capacity and cleanup-pending cycles".
+- JIT runner names are `marsh-<first 12 chars of the cycle id>` so a runner
+  registration can be tied to its cycle telemetry.
+
 ### Changed
 
 - `[lifecycle].job_max_secs` is now a hard 7200s ceiling, enforced fail-closed

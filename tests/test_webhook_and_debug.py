@@ -145,7 +145,7 @@ class HoldOnFailureTests(unittest.TestCase):
                 return 1
 
         class GitHub:
-            def mint_jit(self, group_id, labels, repository=None):
+            def mint_jit(self, group_id, labels, repository=None, name=None):
                 return orch.RunnerRef(9), "jit"
 
             def runner_busy(self, runner) -> bool:

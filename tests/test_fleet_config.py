@@ -140,6 +140,7 @@ class FleetConfigTests(unittest.TestCase):
         self.assertEqual(example.profile["poller"], {
             "interval_secs": 20,
             "request_spacing_secs": 1,
+            "min_tick_secs": 5,
         })
         self.assertEqual(
             [size_class["labels"] for size_class in example.profile["size_class"]],

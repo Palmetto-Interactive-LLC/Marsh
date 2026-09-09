@@ -753,7 +753,7 @@ class GitHubRequestGateTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.busy_calls = 0
 
-            def mint_jit(self, group_id: int, labels: list[str], repository=None):
+            def mint_jit(self, group_id: int, labels: list[str], repository=None, name=None):
                 events.append("jit-mint")
                 return orch.RunnerRef(7), "jit"
 

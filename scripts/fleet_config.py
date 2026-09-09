@@ -289,7 +289,7 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
     if poller is not None:
         if not isinstance(poller, dict):
             fail(f"{profile_file}: [poller] must be a TOML table")
-        require_only(poller, {"interval_secs", "request_spacing_secs"}, f"{profile_file}: [poller]")
+        require_only(poller, {"interval_secs", "request_spacing_secs", "min_tick_secs"}, f"{profile_file}: [poller]")
         interval = poller.get("interval_secs")
         if not isinstance(interval, int) or interval < 1:
             fail(f"{profile_file}: [poller].interval_secs must be a positive integer")
@@ -299,6 +299,11 @@ def validate_profile(profile_file: Path, scope: str, owner: str) -> dict[str, An
         if (not isinstance(request_spacing, int) or isinstance(request_spacing, bool)
                 or request_spacing < 0):
             fail(f"{profile_file}: [poller].request_spacing_secs must be a non-negative integer")
+        min_tick = poller.get("min_tick_secs", 5)
+        if not isinstance(min_tick, int) or isinstance(min_tick, bool) or min_tick < 1:
+            fail(f"{profile_file}: [poller].min_tick_secs must be a positive integer")
+        elif isinstance(interval, int) and not isinstance(interval, bool) and min_tick > interval:
+            fail(f"{profile_file}: [poller].min_tick_secs cannot exceed [poller].interval_secs")
 
     webhook = profile.get("webhook")
     if webhook is not None:

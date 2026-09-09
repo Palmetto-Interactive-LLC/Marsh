@@ -98,6 +98,10 @@ RATE_LIMIT_BACKOFF_MAX_SECS = 900.0
 # tampered runners.toml must fail closed at startup, not silently run longer.
 JOB_MAX_SECS_CEILING = 7200
 START_QUIESCED_ENV = "MARSH_START_QUIESCED"
+# Conditional GETs: GitHub answers an unchanged resource with 304 and does not
+# charge that response against the primary rate limit, so a reconcile scan of
+# a quiet repository costs budget only when something actually changed.
+ETAG_CACHE_MAX_ENTRIES = 4096
 
 
 class GitHubRequestCancelled(RuntimeError):
@@ -158,6 +162,9 @@ class GitHub:
         self._next_request_at = 0.0
         self._fallback_rate_limit_backoff_secs = RATE_LIMIT_BACKOFF_INITIAL_SECS
         self._rate_limit_generation = 0
+        # GET url -> (ETag, raw body). Guarded by _request_lock like the rest of
+        # the gate state; bounded so a long-lived controller cannot grow it forever.
+        self._etag_cache: dict[str, tuple[str, bytes]] = {}
         self._repo_cache: tuple[list[str], float] | None = None
         self._repo_lock = threading.Lock()
         self._group_cache: tuple[int, float] | None = None
@@ -271,11 +278,24 @@ class GitHub:
     def _send_request_locked(self, req: urllib.request.Request) -> dict:
         self._wait_for_request_slot_locked()
         request_started_at = time.monotonic()
+        cache_key = req.full_url if req.get_method() == "GET" else None
+        cached = self._etag_cache.get(cache_key) if cache_key is not None else None
+        if cached is not None:
+            req.add_header("If-None-Match", cached[0])
         try:
             # URL is https://api.github.com + an internal path constant — never caller input.
             with urllib.request.urlopen(req, timeout=30) as r:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-                result = json.loads(r.read() or "{}")
+                body = r.read()
+                response_headers = getattr(r, "headers", None)
+                etag = (response_headers.get("ETag")
+                        if cache_key is not None and response_headers is not None else None)
         except urllib.error.HTTPError as error:
+            if error.code == 304 and cached is not None:
+                # Unchanged since the cached ETag. Serve the retained body; the
+                # request still consumed a gate slot but not primary rate budget.
+                error.close()
+                self._next_request_at = request_started_at + self.request_spacing_secs
+                return json.loads(cached[1] or b"{}")
             if error.code in (403, 429):
                 cooldown_secs, source = self._rate_limit_cooldown(error)
                 self._rate_limit_generation += 1
@@ -288,10 +308,17 @@ class GitHub:
                 log.warning("GitHub API status=%s; applying shared %.1fs cooldown (%s)",
                             error.code, cooldown_secs, source)
             raise
+        if cache_key is not None:
+            if etag:
+                if len(self._etag_cache) >= ETAG_CACHE_MAX_ENTRIES:
+                    self._etag_cache.clear()
+                self._etag_cache[cache_key] = (etag, body)
+            else:
+                self._etag_cache.pop(cache_key, None)
         # Space request starts, rather than adding the full delay after a slow
         # response. A zero value preserves the historical no-pacing behavior.
         self._next_request_at = request_started_at + self.request_spacing_secs
-        return result
+        return json.loads(body or b"{}")
 
     def _installation_token_locked(self) -> str:
         """Return an installation token while the request gate is held.
@@ -579,7 +606,8 @@ class GitHub:
         except Exception:  # noqa: BLE001 — 404 (gone) or transient; caller must not tear down on None
             return None
 
-    def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None) -> tuple[RunnerRef, str]:
+    def mint_jit(self, group_id: int, labels: list[str], repository: str | None = None,
+                 name: str | None = None) -> tuple[RunnerRef, str]:
         # generate-jitconfig REGISTERS the runner now (returns its id) and yields the
         # encoded config the runner boots with. Return the id so we can deregister on
         # cleanup — a JIT runner killed before completing a job would otherwise linger
@@ -590,7 +618,7 @@ class GitHub:
             if fleet_label not in jit_labels:
                 jit_labels.append(fleet_label)
         out = self._api("POST", f"{self._runners_path(repository)}/generate-jitconfig",
-                       body={"name": f"marsh-{uuid.uuid4().hex[:12]}", "runner_group_id": group_id,
+                       body={"name": name or f"marsh-{uuid.uuid4().hex[:12]}", "runner_group_id": group_id,
                              "labels": jit_labels, "work_folder": "_work"})
         return RunnerRef(int(out["runner"]["id"]), repository), out["encoded_jit_config"]
 
@@ -796,6 +824,56 @@ SESSION_ID = "runner"  # sandboxes are single-purpose (one session each); no col
 SESSION_READ_MAX_ERRS = 3
 
 
+# Every sandbox carries its cycle id so a create request whose HTTP exchange
+# failed can be resolved against provider truth (exists -> adopt and delete;
+# absent -> the cycle never held capacity) instead of pinning a class slot
+# forever as an unconfirmed side effect.
+CYCLE_LABEL = "cycle"
+
+# Provider capacity refusals (Daytona: "Total CPU limit exceeded. Maximum
+# allowed: N.") are organization-wide and shared by every fleet on the
+# account. Retrying immediately burns a JIT registration and GitHub budget per
+# doomed create, so spawning pauses briefly and demand is re-evaluated on the
+# next tick; queued jobs simply wait for released capacity.
+PROVIDER_CAPACITY_BACKOFF_SECS = 30.0
+PROVIDER_CAPACITY_MARKERS = ("limit exceeded", "quota exceeded", "insufficient capacity")
+_PROVIDER_BACKOFF_LOCK = threading.Lock()
+_PROVIDER_BACKOFF_UNTIL = 0.0
+
+
+def is_provider_capacity_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in PROVIDER_CAPACITY_MARKERS)
+
+
+def note_provider_capacity_error(error: BaseException,
+                                 backoff_secs: float = PROVIDER_CAPACITY_BACKOFF_SECS) -> bool:
+    """Start (or extend) the shared spawn backoff when the provider refused capacity."""
+    global _PROVIDER_BACKOFF_UNTIL
+    if not is_provider_capacity_error(error):
+        return False
+    with _PROVIDER_BACKOFF_LOCK:
+        _PROVIDER_BACKOFF_UNTIL = max(_PROVIDER_BACKOFF_UNTIL, time.monotonic() + backoff_secs)
+    return True
+
+
+def provider_capacity_backoff_remaining() -> float:
+    with _PROVIDER_BACKOFF_LOCK:
+        return max(_PROVIDER_BACKOFF_UNTIL - time.monotonic(), 0.0)
+
+
+def clear_provider_capacity_backoff() -> None:
+    global _PROVIDER_BACKOFF_UNTIL
+    with _PROVIDER_BACKOFF_LOCK:
+        _PROVIDER_BACKOFF_UNTIL = 0.0
+
+
+def _provider_reports_absent(error: BaseException) -> bool:
+    """A provider answer that the resource does not exist counts as confirmed cleanup."""
+    text = str(error).lower()
+    return "not found" in text or " 404" in text or text.startswith("404")
+
+
 class Daytona:
     def __init__(self, api_key: str, target: str, volume_mounts=None, base_labels: dict | None = None,
                  network_policy: NetworkPolicy | None = None):
@@ -811,7 +889,8 @@ class Daytona:
         self.network_policy = network_policy or NetworkPolicy()
 
     def create_sandbox(self, snapshot: str, auto_stop_minutes: int, size_class: str = "",
-                       repository: str | None = None, spot: bool = False):
+                       repository: str | None = None, spot: bool = False,
+                       cycle_id: str | None = None):
         """New sandbox for one runner cycle. auto_stop_interval is minutes (verified
         against the installed SDK's CreateSandboxBaseParams field docstring, which
         matches the API's own field description) and is purely an orphan safety net:
@@ -826,6 +905,8 @@ class Daytona:
             # Repository scope supplies this from the static profile allowlist;
             # keeping it on the sandbox makes cost and orphan evidence auditable.
             labels["repository"] = repository
+        if cycle_id:
+            labels[CYCLE_LABEL] = cycle_id
         # `spot` is GPU-only capacity: Daytona may terminate the sandbox without
         # notice to reclaim GPUs for on-demand use. Pass it only when the class
         # opted in, so non-GPU fleets keep working against SDKs predating the field.
@@ -836,6 +917,31 @@ class Daytona:
             **spot_kwargs, **self.network_policy.create_parameters()), timeout=180)
         self.sdk.get(sandbox.id)  # ensure started
         return sandbox
+
+    def find_cycle_sandbox(self, cycle_id: str):
+        """Return the sandbox labeled with ``cycle_id``, or None when the provider
+        confirms none exists. Raises when the provider cannot answer, so the caller
+        keeps the cycle pending instead of assuming capacity was never allocated."""
+        candidates = None
+        try:
+            from daytona_sdk import ListSandboxesQuery  # noqa: PLC0415 — optional in older SDKs
+            candidates = list(self.sdk.list(ListSandboxesQuery(labels={CYCLE_LABEL: cycle_id})))
+        except ImportError:
+            candidates = None
+        if candidates is None:
+            candidates = list(self.sdk.list())
+        for sb in candidates:
+            if (getattr(sb, "labels", None) or {}).get(CYCLE_LABEL) == cycle_id:
+                return sb
+        return None
+
+    def delete_sandbox_id(self, sandbox_id: str) -> bool:
+        """Delete by id; True when the provider confirms it is gone (including 'not found')."""
+        try:
+            self.sdk.get(sandbox_id).delete()
+        except Exception as error:  # noqa: BLE001
+            return _provider_reports_absent(error)
+        return True
 
     def start_runner(self, sandbox, jit: str) -> str:
         """Launch the runner as a session command instead of process.exec: exec's
@@ -877,6 +983,11 @@ class Cycle:
     busy_at: float | None = None
     runner: RunnerRef | None = None
     sandbox_id: str | None = None
+    runner_name: str | None = None
+    # CLEANUP_PENDING bookkeeping: which provider side effect is still unproven.
+    sandbox_unconfirmed: bool = False
+    runner_unconfirmed: bool = False
+    pending_since: float | None = None
 
 
 REGISTRY: dict[str, Cycle] = {}
@@ -1469,6 +1580,11 @@ GITHUB_SCOPE = GITHUB_SCOPE_ORGANIZATION
 ORPHAN_SWEEP_GRACE_SECS = 180  # skip sandboxes younger than this -- closes the TOCTOU
                                 # window between create_sandbox() returning and the
                                 # cycle thread's REGISTRY_LOCK-protected sandbox_id write
+# Monotonic start time of the last orphan sweep that completed without error.
+# A CLEANUP_PENDING cycle whose only doubt is "did the provider create anything"
+# is proven clean once a full sweep has run after its grace window: any such
+# sandbox or registration would have been untracked and reaped by that sweep.
+ORPHAN_SWEEP_OK_AT: float | None = None
 
 
 def _sandbox_age_secs(sb) -> float | None:
@@ -1500,7 +1616,9 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
         live_sandboxes = {c.sandbox_id for c in REGISTRY.values() if c.sandbox_id}
         live_runners = {c.runner for c in REGISTRY.values() if c.runner}
 
+    sweep_started_at = time.monotonic()
     ds = 0
+    unconfirmed = 0
     for sb in list(sdk.list()):
         lbl = getattr(sb, "labels", None) or {}
         if not (is_fleet_sandbox(lbl) and sb.id not in live_sandboxes):
@@ -1511,8 +1629,15 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
         try:
             sb.delete()
             ds += 1
-        except Exception:  # noqa: BLE001
-            raise RuntimeError("could not confirm orphan Daytona sandbox deletion") from None
+        except Exception as error:  # noqa: BLE001
+            if _provider_reports_absent(error):
+                ds += 1  # already gone: a cycle or the provider removed it first
+                continue
+            # Keep sweeping the rest; one refused delete must not leave every
+            # other orphan in place until the next ten-minute pass.
+            unconfirmed += 1
+    if unconfirmed:
+        raise RuntimeError("could not confirm orphan Daytona sandbox deletion") from None
 
     dr = 0
     while True:
@@ -1529,6 +1654,8 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
         if found == 0:
             break
 
+    global ORPHAN_SWEEP_OK_AT
+    ORPHAN_SWEEP_OK_AT = sweep_started_at
     if ds or dr:
         log.info("orphan sweep: removed %d untracked sandboxes, %d untracked offline runners", ds, dr)
 
@@ -1546,7 +1673,10 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
     runner = None
     sandbox = None
     jit_mint_attempted = False
+    jit_mint_confirmed_absent = False
     sandbox_create_attempted = False
+    sandbox_create_confirmed_absent = False
+    runner_name = f"marsh-{cycle_id[:12]}"
     jit_started_at = None
     jit_completed_at = None
     sandbox_started_at = None
@@ -1590,7 +1720,16 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
             return
         jit_mint_attempted = True
         jit_started_at = _cycle_now()
-        runner, jit = gh.mint_jit(group_id, cls["labels"], repository)
+        with REGISTRY_LOCK:
+            REGISTRY[cycle_id].runner_name = runner_name
+        try:
+            runner, jit = gh.mint_jit(group_id, cls["labels"], repository, name=runner_name)
+        except urllib.error.HTTPError as error:
+            # GitHub answered with an error status: no registration was created
+            # for this name, so the cycle never held a runner slot.
+            error.close()
+            jit_mint_confirmed_absent = True
+            raise
         jit_completed_at = _cycle_now()
         with REGISTRY_LOCK:
             REGISTRY[cycle_id].runner = runner
@@ -1607,8 +1746,37 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
 
         sandbox_create_started_at = _cycle_now()
         sandbox_create_attempted = True
-        sandbox = dt.create_sandbox(cls["snapshot"], lc.auto_stop_minutes, cls.get("name", ""), repository,
-                                    spot=bool(cls.get("spot", False)))
+        try:
+            sandbox = dt.create_sandbox(cls["snapshot"], lc.auto_stop_minutes, cls.get("name", ""), repository,
+                                        spot=bool(cls.get("spot", False)), cycle_id=cycle_id)
+        except Exception as error:  # noqa: BLE001
+            if note_provider_capacity_error(error):
+                termination_reason = "provider_capacity"
+                log.warning("[%s] sandbox create refused for provider capacity; pausing spawns %ds",
+                            cls["name"], int(PROVIDER_CAPACITY_BACKOFF_SECS))
+            else:
+                termination_reason = "create_failed"
+                # Bounded vendor text only; never a token or request body.
+                log.warning("[%s] sandbox create failed (%s: %s)", cls["name"],
+                            type(error).__name__, str(error)[:120])
+            confirmed, existing = _confirm_cycle_sandbox(dt, cycle_id)
+            if confirmed and existing is None:
+                sandbox_create_confirmed_absent = True
+                log.info("[%s] provider confirmed no sandbox for this cycle; releasing its slot", cls["name"])
+            elif confirmed:
+                # The request failed after the provider allocated capacity.
+                # Adopt it so the ordinary teardown below deletes it.
+                sandbox = existing
+                sandbox_started_at = sandbox_create_started_at
+                sandbox_ready_at = _cycle_now()
+                with REGISTRY_LOCK:
+                    REGISTRY[cycle_id].sandbox_id = sandbox.id
+                log.warning("[%s] create raised but sandbox=%s exists; adopting it for teardown",
+                            cls["name"], sandbox.id)
+            else:
+                log.warning("[%s] could not confirm provider state after failed create; retaining "
+                            "cycle as cleanup pending", cls["name"])
+            return
         # Count allocation from the request that successfully produced a
         # sandbox. A failed create or earlier GitHub JIT work must never be
         # multiplied into provider resource-hours.
@@ -1787,7 +1955,12 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
             else:
                 time.sleep(hold_for)
         allocation_completed_at = None
-        cleanup_status = "create_unconfirmed" if sandbox_create_attempted else "create_not_attempted"
+        if not sandbox_create_attempted:
+            cleanup_status = "create_not_attempted"
+        elif sandbox_create_confirmed_absent:
+            cleanup_status = "create_failed"  # provider-confirmed zero allocation
+        else:
+            cleanup_status = "create_unconfirmed"
         if sandbox is not None:
             try:
                 sandbox.process.delete_session(SESSION_ID)
@@ -1812,18 +1985,20 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
         # A provider request may fail after the remote side effect succeeds.
         # Keep that cycle visible until an operator can reconcile it instead of
         # reporting a false empty cohort during a drain.
+        runner_unconfirmed = jit_mint_attempted and runner is None and not jit_mint_confirmed_absent
+        sandbox_unconfirmed = (sandbox_create_attempted and sandbox is None
+                               and not sandbox_create_confirmed_absent)
         cleanup_complete = (
-            not (jit_mint_attempted and runner is None)
-            and not (sandbox_create_attempted and sandbox is None)
+            not runner_unconfirmed
+            and not sandbox_unconfirmed
             and cleanup_status != "delete_failed"
         )
-        if not cleanup_complete and (
-                (jit_mint_attempted and runner is None)
-                or (sandbox_create_attempted and sandbox is None)):
+        if runner_unconfirmed or sandbox_unconfirmed:
             log.warning("[%s] provider side effect was not confirmed; retaining cycle as cleanup pending",
                         cls["name"])
         if runner is not None and not _runner_delete_confirmed(gh, runner):
             cleanup_complete = False
+            runner_unconfirmed = True
             log.warning("[%s] runner deregistration was not confirmed; retaining cycle as cleanup pending",
                         cls["name"])
         if cleanup_complete:
@@ -1833,14 +2008,96 @@ def cycle(cycle_id: str, cls: dict, gh: GitHub, dt: Daytona, group_id: int,
             # This deliberately remains counted by runtime status. A cohort
             # rollout must not report total=0 while an old sandbox or runner
             # could still exist. Reconciliation treats this non-supply state
-            # as a capacity loss rather than masking it with a fresh runner.
+            # as a capacity loss rather than masking it with a fresh runner;
+            # resolve_cleanup_pending() keeps retrying against provider truth
+            # so the loss is temporary rather than permanent.
             with REGISTRY_LOCK:
                 pending = REGISTRY.get(cycle_id)
                 if pending is not None:
                     pending.state = "CLEANUP_PENDING"
+                    pending.pending_since = time.monotonic()
+                    pending.sandbox_unconfirmed = sandbox_unconfirmed or cleanup_status == "delete_failed"
+                    pending.runner_unconfirmed = runner_unconfirmed
+                    if sandbox is not None:
+                        pending.sandbox_id = sandbox.id
             log.warning("[%s] cleanup is incomplete; cycle remains visible and blocks a safe drain",
                         cls["name"])
         _wake_status(status_wake)
+
+
+def _confirm_cycle_sandbox(dt: Daytona, cycle_id: str) -> tuple[bool, object | None]:
+    """Ask the provider whether a sandbox exists for this cycle.
+
+    Returns ``(confirmed, sandbox)``. ``confirmed`` is False when the provider
+    (or a local adapter without the lookup) could not answer; callers must then
+    keep the cycle pending rather than assume the capacity was never allocated.
+    """
+    finder = getattr(dt, "find_cycle_sandbox", None)
+    if finder is None:
+        return False, None
+    try:
+        return True, finder(cycle_id)
+    except Exception as error:  # noqa: BLE001
+        log.warning("cycle sandbox lookup failed (%s)", type(error).__name__)
+        return False, None
+
+
+def resolve_cleanup_pending(gh: GitHub, dt: Daytona) -> int:
+    """Retry every CLEANUP_PENDING cycle against provider truth and release the
+    ones that prove clean.
+
+    A pending cycle keeps consuming its class ``max`` slot on purpose, but only
+    until the provider confirms the doubt either way. Without this pass a burst
+    of refused creates (for example an organization CPU quota) would pin those
+    slots for the life of the process and starve the class of real capacity.
+    """
+    with REGISTRY_LOCK:
+        pending = [(cycle_id, entry) for cycle_id, entry in REGISTRY.items()
+                   if entry.state == "CLEANUP_PENDING"]
+    if not pending:
+        return 0
+    released = 0
+    for cycle_id, entry in pending:
+        sandbox_clean = not entry.sandbox_unconfirmed
+        runner_clean = not entry.runner_unconfirmed
+        if not sandbox_clean:
+            if entry.sandbox_id and hasattr(dt, "delete_sandbox_id"):
+                sandbox_clean = bool(dt.delete_sandbox_id(entry.sandbox_id))
+            else:
+                confirmed, existing = _confirm_cycle_sandbox(dt, cycle_id)
+                if confirmed and existing is None:
+                    sandbox_clean = True
+                elif confirmed:
+                    try:
+                        existing.delete()
+                        sandbox_clean = True
+                    except Exception as error:  # noqa: BLE001
+                        sandbox_clean = _provider_reports_absent(error)
+        if not runner_clean and entry.runner is not None:
+            runner_clean = _runner_delete_confirmed(gh, entry.runner)
+        # Existence-unknown doubts (no id to act on) are settled by a full
+        # orphan sweep that started after this cycle's grace window: anything
+        # it left behind would have been untracked and removed by that sweep.
+        swept_after = (ORPHAN_SWEEP_OK_AT is not None and entry.pending_since is not None
+                       and ORPHAN_SWEEP_OK_AT - entry.pending_since > ORPHAN_SWEEP_GRACE_SECS)
+        if not sandbox_clean and entry.sandbox_id is None and swept_after:
+            sandbox_clean = True
+        if not runner_clean and entry.runner is None and swept_after:
+            runner_clean = True
+        if sandbox_clean and runner_clean:
+            with REGISTRY_LOCK:
+                REGISTRY.pop(cycle_id, None)
+            released += 1
+        else:
+            with REGISTRY_LOCK:
+                current = REGISTRY.get(cycle_id)
+                if current is not None:
+                    current.sandbox_unconfirmed = not sandbox_clean
+                    current.runner_unconfirmed = not runner_clean
+    if released:
+        log.info("cleanup pending: released %d cycle(s) confirmed clean by the provider; "
+                 "%d still pending", released, len(pending) - released)
+    return released
 
 
 def spawn_cycle(cls: dict, gh: GitHub, dt: Daytona, group_id: int, busy_map: BusyMap,
@@ -1922,6 +2179,13 @@ def _reconcile_organization(gh: GitHub, group_name: str, classes: list[dict], bu
         to_spawn = min(to_spawn, max(max_live - live, 0))
         floor_slots = max(min(floor_deficit, to_spawn), 0)
 
+        backoff = provider_capacity_backoff_remaining()
+        if to_spawn and backoff > 0:
+            log.warning("[%s] reconcile: queued=%d supply=%d live=%d max=%d -> deferring +%d; "
+                        "provider capacity backoff %.0fs left", cls["name"], queued_n, supply,
+                        live, max_live, to_spawn, backoff)
+            continue
+
         for index in range(to_spawn):
             if not _admission_open(admission):
                 return
@@ -1982,6 +2246,12 @@ def _reconcile_repositories(gh: GitHub, group_id: int, classes: list[dict], busy
                          or (cycle_item.state == "IDLE" and not busy_map.is_busy(cycle_item.runner)))
             queued_n = demand[(repository, class_name)]
             to_spawn = min(max(queued_n - supply, 0), available)
+            backoff = provider_capacity_backoff_remaining()
+            if to_spawn and backoff > 0:
+                log.warning("[%s] repository=%s reconcile: queued=%d supply=%d -> deferring +%d; "
+                            "provider capacity backoff %.0fs left", class_name, repository,
+                            queued_n, supply, to_spawn, backoff)
+                continue
             for _ in range(to_spawn):
                 if not _admission_open(admission):
                     return
@@ -2091,6 +2361,19 @@ def initialize_provider_runtime(api_key: str, cfg: dict, gh: GitHub, base_labels
                    network_policy=network_policy)
 
 
+MIN_TICK_SECS_DEFAULT = 5
+
+
+def resolve_min_tick_secs(poller_cfg: dict, poll_interval: int) -> int:
+    """Shortest spacing between two reconcile scans, regardless of wake events."""
+    raw = poller_cfg.get("min_tick_secs", min(MIN_TICK_SECS_DEFAULT, poll_interval))
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ValueError("[poller].min_tick_secs must be a positive integer")
+    if raw > poll_interval:
+        raise ValueError("[poller].min_tick_secs cannot exceed [poller].interval_secs")
+    return raw
+
+
 def resolve_job_max_secs(lcfg: dict) -> int:
     """Read [lifecycle].job_max_secs, failing closed above the OPP-524 ceiling.
 
@@ -2158,6 +2441,7 @@ def main() -> None:
     )
     poll_default = 60 if scope == GITHUB_SCOPE_REPOSITORY else 20
     poll_interval = int(poller_cfg.get("interval_secs", poll_default))
+    min_tick_secs = resolve_min_tick_secs(poller_cfg, poll_interval)
     classes = cfg["size_class"]
     required_labels = routing_required_labels(cfg)
     network_policy = network_policy_from_config(cfg)
@@ -2233,6 +2517,7 @@ def main() -> None:
 
     last_sweep = 0.0
     reconciled = False
+    next_tick_at = 0.0
     while not control.stop.is_set():
         if control.refresh.is_set():
             # Clear before the provider call so a SIGUSR2 arriving while it is
@@ -2245,6 +2530,13 @@ def main() -> None:
         if control.admission.is_set():
             if dt is None:
                 raise RuntimeError("provider runtime was not initialized after admission opened")
+            try:
+                resolve_cleanup_pending(gh, dt)
+            except GitHubRequestCancelled:
+                log.info("cleanup-pending resolution cancelled during service shutdown")
+            except Exception:  # noqa: BLE001
+                log.exception("cleanup-pending resolution failed")
+            next_tick_at = time.monotonic() + min_tick_secs
             if poller_tick(gh, runner_group, classes, busy_map, dt, lc, control.stop,
                            required_labels, control.admission, control.wake):
                 reconciled = True
@@ -2265,6 +2557,14 @@ def main() -> None:
         publish_runtime_status()
         control.wake.wait(poll_interval)
         control.wake.clear()
+        # Cycle state changes wake this loop so runtime status publishes
+        # promptly, but every wake must not become a full GitHub scan: under a
+        # burst that turned the reconciler into a request storm and exhausted
+        # the App's primary rate limit for the whole fleet. Ticks run at most
+        # once per min_tick_secs; a stop or quiesce still interrupts the hold.
+        remaining = next_tick_at - time.monotonic()
+        if remaining > 0 and not control.stop.is_set():
+            control.stop.wait(remaining)
 
     # Drain: no new spawns happen once the loop above exits. IDLE/SPAWNING cycles
     # notice `stop` on their own next ~15s poll and tear themselves down; BUSY cycles

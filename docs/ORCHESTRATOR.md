@@ -22,6 +22,48 @@ The poller is always the source of truth. Webhooks are a best-effort fast path
 (GitHub may delay or drop delivery). If the webhook is down, Marsh still scales
 from the poller alone.
 
+## Reconcile cadence
+
+Every cycle state change (spawned, online, busy, gone) wakes the main loop so
+runtime status publishes promptly. A wake does not by itself trigger a GitHub
+scan: scans run at most once per `[poller].min_tick_secs` (default `5`, never
+more than `interval_secs`) and at least once per `interval_secs`. Without that
+floor a burst of jobs turned every cycle transition into a full scan, exhausted
+the GitHub App's primary rate limit, and froze spawning for the whole cooldown.
+
+List requests send `If-None-Match` with the last `ETag` GitHub returned for
+that URL. An unchanged page comes back `304` and is not charged against the
+primary rate limit, so a quiet repository costs almost no budget per tick.
+
+## Provider capacity and cleanup-pending cycles
+
+Daytona enforces an organization-wide compute quota shared by every fleet on
+the account (for example `Total CPU limit exceeded. Maximum allowed: 250.`).
+When a create is refused for capacity, the orchestrator:
+
+1. logs `sandbox create refused for provider capacity` for that cycle;
+2. pauses new spawns for `PROVIDER_CAPACITY_BACKOFF_SECS` (30s) across all
+   size classes, logging `deferring +N; provider capacity backoff` per tick;
+3. emits cycle telemetry with `termination_reason = provider_capacity` and
+   `cleanup_status = create_failed` (a provider-confirmed zero allocation).
+
+Every sandbox is labeled `cycle=<cycle id>`, and JIT runners are named
+`marsh-<first 12 chars of the cycle id>`. After any failed create the
+orchestrator asks the provider whether a sandbox with that label exists: absent
+means the slot is released immediately; present means the sandbox is adopted
+and torn down normally. Only when the provider cannot answer does the cycle
+stay `CLEANUP_PENDING`, and it still counts against the class `max` while it
+does. Each tick then retries every pending cycle (delete by id, deregister the
+runner, or re-check the label) and releases the ones the provider confirms
+clean; a doubt with no id to act on is settled by the next successful orphan
+sweep that ran after the cycle's grace window. The log line
+`cleanup pending: released N cycle(s)` records each recovery.
+
+Sum the `cpu` of every size class `max` across all fleets that share one
+Daytona organization; when that exceeds the quota, the backoff is what keeps a
+burst from turning into a storm of refused creates, but only a higher quota
+adds capacity.
+
 ## Adaptive cycle polling
 
 After a runner process starts inside a sandbox, the cycle thread polls for job
@@ -124,6 +166,9 @@ Useful stage fields (seconds, controller-observed wall time):
 
 `usage-report` (watchdog) summarizes per-snapshot counts, outcomes, duration
 p95, and stage p95 when every sample in the window includes that stage.
+`cleanup_status` is one of `deleted`, `delete_failed`, `create_unconfirmed`,
+`create_failed` (provider confirmed nothing was allocated), or
+`create_not_attempted`; the last two are known zero allocations.
 
 Telemetry is secret-free by design: no tokens, exception bodies, or provider
 error payloads.

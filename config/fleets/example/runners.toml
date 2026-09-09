@@ -78,6 +78,9 @@ busy_poll_secs = 10
 [poller]
 interval_secs = 20
 request_spacing_secs = 1
+# Cycle state changes wake the reconciler early; never scan GitHub more often
+# than this regardless of wakes (see docs/ORCHESTRATOR.md, "Reconcile cadence").
+min_tick_secs = 5
 
 # Optional: GitHub workflow_job webhooks wake the poller immediately.
 # Point the App webhook at your TLS endpoint → /github and set hmac_env on the host.
