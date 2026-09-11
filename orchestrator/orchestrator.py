@@ -1596,14 +1596,28 @@ def reap(gh: GitHub, sdk: DaytonaSDK) -> None:
         if found == 0:
             break
     ds = 0
+    deferred = 0
     for sb in list(sdk.list()):
         if is_fleet_sandbox(getattr(sb, "labels", None) or {}):
             try:
                 sb.delete()
                 ds += 1
-            except Exception:  # noqa: BLE001
+            except Exception as error:  # noqa: BLE001
+                if _provider_reports_absent(error):
+                    ds += 1
+                    continue
+                if "state change in progress" in str(error).lower():
+                    # Daytona is still creating or destroying it (a create that
+                    # hung past our timeout, or a teardown in flight). Refusing
+                    # to start over one such sandbox crash-looped a fleet on
+                    # 2026-09-11 06:48 UTC; leave it to the orphan sweep.
+                    deferred += 1
+                    log.warning("reap: sandbox=%s state=%s still changing state; deferring to the orphan sweep",
+                                sb.id, getattr(sb, "state", None))
+                    continue
                 raise RuntimeError("could not confirm stale Daytona sandbox deletion") from None
-    log.info("reap: removed %d offline daytona runners, %d leftover gha-runner sandboxes", dr, ds)
+    log.info("reap: removed %d offline daytona runners, %d leftover gha-runner sandboxes (%d deferred)",
+             dr, ds, deferred)
 
 
 ORG_LABEL = ""  # set in main() from [github].org/owner; scopes organization cleanup.
