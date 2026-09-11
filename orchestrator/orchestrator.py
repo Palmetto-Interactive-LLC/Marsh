@@ -821,6 +821,9 @@ RUNNER_ENV = {"CACHE_VOL": "/cache", "PIP_NO_CACHE_DIR": "1"}
 SESSION_ID = "runner"  # sandboxes are single-purpose (one session each); no collision risk
 SESSION_CREATE_TIMEOUT_SECS = 60
 SESSION_CREATE_ATTEMPTS = 2
+# Normal creates land in 5-25s; a hung create held a slot for 180s on
+# 2026-09-11 06:33 UTC. Fail it sooner so the cycle releases its slot.
+SANDBOX_CREATE_TIMEOUT_SECS = 90
 # Consecutive session-read failures (each ~15s apart) WITH GitHub confirming the runner idle
 # before a cycle concludes its sandbox is gone. Guards a running job against a transient
 # Daytona-side read blip being mistaken for "session ended". ~45s of tolerance.
@@ -917,7 +920,7 @@ class Daytona:
         sandbox = self.sdk.create(CreateSandboxFromSnapshotParams(
             snapshot=snapshot, labels=labels, volumes=volumes,
             auto_stop_interval=auto_stop_minutes, auto_delete_interval=0,
-            **spot_kwargs, **self.network_policy.create_parameters()), timeout=180)
+            **spot_kwargs, **self.network_policy.create_parameters()), timeout=SANDBOX_CREATE_TIMEOUT_SECS)
         self.sdk.get(sandbox.id)  # ensure started
         return sandbox
 
