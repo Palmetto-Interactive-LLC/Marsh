@@ -1655,6 +1655,9 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
             # Keep sweeping the rest; one refused delete must not leave every
             # other orphan in place until the next ten-minute pass.
             unconfirmed += 1
+            # Bounded vendor text only; never a token or request body.
+            log.warning("orphan sweep: delete refused for sandbox=%s state=%s (%s: %s)",
+                        sb.id, getattr(sb, "state", None), type(error).__name__, str(error)[:120])
     if unconfirmed:
         raise RuntimeError("could not confirm orphan Daytona sandbox deletion") from None
 
