@@ -77,6 +77,7 @@ from daytona_sdk import (
     SessionExecuteRequest,
     VolumeMount,
 )
+from daytona_toolbox_api_client.models.create_session_request import CreateSessionRequest
 
 log = logging.getLogger("marsh-orch")
 
@@ -818,6 +819,7 @@ exec bash /usr/local/bin/run-ephemeral.sh
 '"""
 RUNNER_ENV = {"CACHE_VOL": "/cache", "PIP_NO_CACHE_DIR": "1"}
 SESSION_ID = "runner"  # sandboxes are single-purpose (one session each); no collision risk
+SESSION_CREATE_TIMEOUT_SECS = 60
 # Consecutive session-read failures (each ~15s apart) WITH GitHub confirming the runner idle
 # before a cycle concludes its sandbox is gone. Guards a running job against a transient
 # Daytona-side read blip being mistaken for "session ended". ~45s of tolerance.
@@ -950,7 +952,17 @@ class Daytona:
         its cmd_id immediately, so no single HTTP request stays open for the runner's
         lifetime — we poll get_session_command separately instead. SessionExecuteRequest
         has no env= param (unlike exec), so env vars are set via a shell prefix."""
-        sandbox.process.create_session(SESSION_ID)
+        # Bound the session create: with no timeout a Daytona proxy disconnect
+        # parked cycles for ~16 minutes holding their slot, and the SDK's own
+        # retry then failed with "session already exists". An existing session
+        # on a fresh single-purpose sandbox is ours, so a conflict is success.
+        try:
+            sandbox.process._api_client.create_session(  # noqa: SLF001 — SDK wrapper exposes no timeout
+                request=CreateSessionRequest(session_id=SESSION_ID), _request_timeout=SESSION_CREATE_TIMEOUT_SECS)
+        except Exception as error:  # noqa: BLE001
+            if "already exists" not in str(error) and getattr(error, "status", None) != 409:
+                raise
+            log.info("session %s already exists on sandbox=%s; reusing it", SESSION_ID, sandbox.id)
         env = {"RUNNER_JITCONFIG": jit, **RUNNER_ENV}
         prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
         resp = sandbox.process.execute_session_command(
