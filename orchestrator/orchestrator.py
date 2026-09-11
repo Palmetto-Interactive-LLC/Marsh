@@ -820,6 +820,7 @@ exec bash /usr/local/bin/run-ephemeral.sh
 RUNNER_ENV = {"CACHE_VOL": "/cache", "PIP_NO_CACHE_DIR": "1"}
 SESSION_ID = "runner"  # sandboxes are single-purpose (one session each); no collision risk
 SESSION_CREATE_TIMEOUT_SECS = 60
+SESSION_CREATE_ATTEMPTS = 2
 # Consecutive session-read failures (each ~15s apart) WITH GitHub confirming the runner idle
 # before a cycle concludes its sandbox is gone. Guards a running job against a transient
 # Daytona-side read blip being mistaken for "session ended". ~45s of tolerance.
@@ -956,13 +957,22 @@ class Daytona:
         # parked cycles for ~16 minutes holding their slot, and the SDK's own
         # retry then failed with "session already exists". An existing session
         # on a fresh single-purpose sandbox is ours, so a conflict is success.
-        try:
-            sandbox.process._api_client.create_session(  # noqa: SLF001 — SDK wrapper exposes no timeout
-                request=CreateSessionRequest(session_id=SESSION_ID), _request_timeout=SESSION_CREATE_TIMEOUT_SECS)
-        except Exception as error:  # noqa: BLE001
-            if "already exists" not in str(error) and getattr(error, "status", None) != 409:
+        for attempt in range(SESSION_CREATE_ATTEMPTS):
+            try:
+                sandbox.process._api_client.create_session(  # noqa: SLF001 — SDK wrapper exposes no timeout
+                    request=CreateSessionRequest(session_id=SESSION_ID), _request_timeout=SESSION_CREATE_TIMEOUT_SECS)
+                break
+            except Exception as error:  # noqa: BLE001
+                if "already exists" in str(error) or getattr(error, "status", None) == 409:
+                    log.info("session %s already exists on sandbox=%s; reusing it", SESSION_ID, sandbox.id)
+                    break
+                # A proxy read timeout is the common case and usually clears on
+                # the next request; the "already exists" branch above makes a
+                # retry safe even when the first request did land server-side.
+                if attempt + 1 < SESSION_CREATE_ATTEMPTS and "timed out" in str(error).lower():
+                    log.warning("session create timed out on sandbox=%s; retrying once", sandbox.id)
+                    continue
                 raise
-            log.info("session %s already exists on sandbox=%s; reusing it", SESSION_ID, sandbox.id)
         env = {"RUNNER_JITCONFIG": jit, **RUNNER_ENV}
         prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
         resp = sandbox.process.execute_session_command(
