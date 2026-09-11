@@ -1569,6 +1569,13 @@ def reap(gh: GitHub, sdk: DaytonaSDK) -> None:
             if (item["status"] == "offline" and item["name"].startswith("marsh-")
                     and any(label["name"] == "daytona" for label in item["labels"])
                     and is_fleet_runner(gh, item)):
+                if item.get("busy"):
+                    # GitHub refuses (422) to deregister a runner it still shows
+                    # as busy; it flips busy off itself once the lost runner's
+                    # job times out. Leave it for the next pass instead of
+                    # failing the whole sweep over a registration nobody can
+                    # delete yet.
+                    continue
                 if not _runner_delete_confirmed(gh, runner):
                     raise RuntimeError("could not confirm stale GitHub runner deregistration")
                 dr += 1
@@ -1659,6 +1666,8 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
                     and any(label["name"] == "daytona" for label in item["labels"])
                     and is_fleet_runner(gh, item)
                     and runner not in live_runners):
+                if item.get("busy"):
+                    continue  # see reap(): undeletable until GitHub times the job out
                 if not _runner_delete_confirmed(gh, runner):
                     raise RuntimeError("could not confirm orphan GitHub runner deregistration")
                 dr += 1
