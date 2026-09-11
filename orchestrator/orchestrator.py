@@ -1664,6 +1664,11 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
             if _provider_reports_absent(error):
                 ds += 1  # already gone: a cycle or the provider removed it first
                 continue
+            if "state change in progress" in str(error).lower():
+                # Daytona is already acting on it (a cycle thread's own delete, or
+                # a teardown that has not flipped the listed state yet). Not an
+                # orphan; the next pass sees it absent.
+                continue
             # Keep sweeping the rest; one refused delete must not leave every
             # other orphan in place until the next ten-minute pass.
             unconfirmed += 1
