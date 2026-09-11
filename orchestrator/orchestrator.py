@@ -1655,6 +1655,8 @@ def orphan_sweep(gh: GitHub, sdk: DaytonaSDK) -> None:
         age = _sandbox_age_secs(sb)
         if age is not None and age < ORPHAN_SWEEP_GRACE_SECS:
             continue  # too young to be a confirmed orphan -- a cycle may still be registering it
+        if str(getattr(sb, "state", "")).rsplit(".", 1)[-1].upper() in ("DESTROYING", "DESTROYED"):
+            continue  # already on its way out; Daytona answers a delete with a conflict until it lands
         try:
             sb.delete()
             ds += 1
