@@ -19,7 +19,9 @@ name: Deploy ECS
 # the ECR digest).
 
 on:
-  workflow_run:
+  # No checkout and no PR code runs here: head_sha is only an ECR tag lookup, and the whole
+  # workflow is gated by vars.ECS_DEPLOY_ENABLED and limited to main.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [CI]
     types: [completed]
     branches: [main]
