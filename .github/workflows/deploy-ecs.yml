@@ -1,0 +1,222 @@
+name: Deploy ECS
+
+# ADR 0014 (pi-platform#640): Marsh orchestrators run on ECS (cluster pi-platform-prod),
+# one single-task service per fleet, family and service "marsh-orchestrator-<fleet>-<env>".
+#
+# INERT until repo variable ECS_DEPLOY_ENABLED == 'true'. Merging this file changes nothing.
+#
+# Repo variables (created by pi-platform):
+#   ECS_DEPLOY_ENABLED   'true' to turn the workflow on
+#   ECS_DEPLOY_ROLE_ARN  per-repo GitHub OIDC role this workflow assumes
+#   ECS_CLUSTER          optional, defaults to pi-platform-prod
+#   ECR_REPOSITORY       optional, defaults to marsh/orchestrator
+#
+# Image source: no workflow in THIS repo pushes marsh/orchestrator today (Marsh-ops builds it
+# and tags it with its own commit SHA). So the workflow_run path looks the image up in ECR by
+# the triggering commit SHA (full, then 7-char) and skips cleanly when no such tag exists.
+# workflow_dispatch takes an explicit image_tag. The task definition SHAPE stays owned by
+# pi-platform: CI downloads the current family revision and swaps only the image (pinned to
+# the ECR digest).
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Target environment
+        type: choice
+        options: [prod, staging]
+        default: staging
+      image_tag:
+        description: ECR tag in marsh/orchestrator to deploy (default is the current commit SHA)
+        type: string
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: deploy-ecs
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER || 'pi-platform-prod' }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'marsh/orchestrator' }}
+
+jobs:
+  resolve:
+    name: resolve-image
+    if: >-
+      vars.ECS_DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.ECS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image digest from ECR
+        id: image
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          EVENT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG}" ]; then
+            candidates=("${INPUT_TAG}")
+          else
+            candidates=("${EVENT_SHA}" "${EVENT_SHA:0:7}")
+          fi
+          for tag in "${candidates[@]}"; do
+            digest="$(aws ecr describe-images --repository-name "${ECR_REPOSITORY}" \
+              --image-ids "imageTag=${tag}" \
+              --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)"
+            if [ -n "${digest}" ] && [ "${digest}" != "None" ]; then
+              registry="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+              echo "image=${registry}/${ECR_REPOSITORY}@${digest}" >> "$GITHUB_OUTPUT"
+              echo "Resolved ${ECR_REPOSITORY}:${tag} -> ${digest}"
+              exit 0
+            fi
+          done
+          echo "::notice::No ${ECR_REPOSITORY} image tagged ${candidates[*]}. Nothing to deploy."
+          echo "image=" >> "$GITHUB_OUTPUT"
+
+  deploy-staging:
+    name: staging-${{ matrix.fleet }}
+    needs: resolve
+    if: >-
+      needs.resolve.outputs.image != '' &&
+      (github.event_name == 'workflow_run' || inputs.env == 'staging')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        fleet: [meridian7, oppintell, quarry, palmetto]
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.ECS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check service exists
+        id: svc
+        shell: bash
+        env:
+          SERVICE: marsh-orchestrator-${{ matrix.fleet }}-staging
+        run: |
+          set -euo pipefail
+          status="$(aws ecs describe-services --cluster "${ECS_CLUSTER}" --services "${SERVICE}" \
+            --query 'services[0].status' --output text 2>/dev/null || true)"
+          if [ "${status}" = "ACTIVE" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${SERVICE} not found in ${ECS_CLUSTER} (status '${status}'). Skipping."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download current task definition
+        if: steps.svc.outputs.exists == 'true'
+        id: template
+        shell: bash
+        env:
+          FAMILY: marsh-orchestrator-${{ matrix.fleet }}-staging
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition --task-definition "${FAMILY}" --query taskDefinition \
+            | jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            > "${RUNNER_TEMP}/task-definition.json"
+          name="$(jq -r '[.containerDefinitions[] | select(.essential != false)][0].name' "${RUNNER_TEMP}/task-definition.json")"
+          echo "container=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition
+        if: steps.svc.outputs.exists == 'true'
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
+        with:
+          task-definition: ${{ runner.temp }}/task-definition.json
+          container-name: ${{ steps.template.outputs.container }}
+          image: ${{ needs.resolve.outputs.image }}
+
+      - name: Deploy to ECS
+        if: steps.svc.outputs.exists == 'true'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: marsh-orchestrator-${{ matrix.fleet }}-staging
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  deploy-prod:
+    name: prod-${{ matrix.fleet }}
+    needs: [resolve, deploy-staging]
+    # Prod waits for staging to finish stable (or be skipped because it was not requested).
+    # On manual runs, env=prod deploys prod only.
+    if: >-
+      always() &&
+      needs.resolve.outputs.image != '' &&
+      needs.resolve.result == 'success' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') &&
+      (github.event_name == 'workflow_run' || inputs.env == 'prod')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: true
+      # One at a time, palmetto last. Each fleet is a single task (two orchestrators on one
+      # Daytona account corrupt the fleet), so never roll two fleets at once.
+      max-parallel: 1
+      matrix:
+        fleet: [meridian7, oppintell, quarry, palmetto]
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.ECS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download current task definition
+        id: template
+        shell: bash
+        env:
+          FAMILY: marsh-orchestrator-${{ matrix.fleet }}-prod
+        run: |
+          set -euo pipefail
+          aws ecs describe-task-definition --task-definition "${FAMILY}" --query taskDefinition \
+            | jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            > "${RUNNER_TEMP}/task-definition.json"
+          name="$(jq -r '[.containerDefinitions[] | select(.essential != false)][0].name' "${RUNNER_TEMP}/task-definition.json")"
+          echo "container=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@8d79160660ad39c402a16e5fc7cd2a32e8f7d6b7 # v1.9.1
+        with:
+          task-definition: ${{ runner.temp }}/task-definition.json
+          container-name: ${{ steps.template.outputs.container }}
+          image: ${{ needs.resolve.outputs.image }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@a00d4d57ac0de1a99b39fe469f3d898d38717c2b # v2.6.4
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: marsh-orchestrator-${{ matrix.fleet }}-prod
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
