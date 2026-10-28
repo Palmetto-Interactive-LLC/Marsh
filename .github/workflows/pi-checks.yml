@@ -2,20 +2,18 @@ name: PI Checks
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions: {}
 
 concurrency:
-  group: pi-checks-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: pi-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   pi-checks:
     permissions:
       contents: read
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@a39c6b8e56e9339ddcbb964409be3dfc3b43e928 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@336fc24e66f11a5f2c158529957ae41b0f09c473 # v1
     with:
       stack: python
       # Marsh's own gate (shell, JSON, TOML, Python and Terraform checks).

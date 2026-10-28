@@ -17,10 +17,9 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@c4a43edadc39d41c18eec5f9d4a4313478b9c098 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@336fc24e66f11a5f2c158529957ae41b0f09c473 # v1
     with:
       app: marsh
       cluster: pi-platform-prod
       images: '[{"name":"orchestrator","dockerfile":"orchestrator/Dockerfile","context":"."}]'
       services: '["marsh-orchestrator-meridian7","marsh-orchestrator-oppintell","marsh-orchestrator-quarry","marsh-orchestrator-palmetto"]'
-      environments: '["prod"]'
