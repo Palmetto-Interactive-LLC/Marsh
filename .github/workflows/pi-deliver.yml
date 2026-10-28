@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@d7c8077f09cfeffc3cf660081c9499c0911826c5 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@0339360e73891ba021302779ec2a1035dc7750f8 # v1
     with:
       app: marsh
       cluster: pi-platform-prod
