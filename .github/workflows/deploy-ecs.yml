@@ -139,12 +139,16 @@ jobs:
         shell: bash
         env:
           FAMILY: marsh-orchestrator-${{ matrix.fleet }}-staging
+          CONTAINER_OVERRIDE: ${{ vars.ECS_CONTAINER_NAME }}
         run: |
           set -euo pipefail
           aws ecs describe-task-definition --task-definition "${FAMILY}" --query taskDefinition \
             | jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             > "${RUNNER_TEMP}/task-definition.json"
-          name="$(jq -r '[.containerDefinitions[] | select(.essential != false)][0].name' "${RUNNER_TEMP}/task-definition.json")"
+          # Naming standard: the main container is "web" unless ECS_CONTAINER_NAME says otherwise.
+          name="${CONTAINER_OVERRIDE:-web}"
+          jq -e --arg n "${name}" '.containerDefinitions | any(.name == $n)' "${RUNNER_TEMP}/task-definition.json" > /dev/null \
+            || { echo "::error::Task definition ${FAMILY} has no container named ${name}"; exit 1; }
           echo "container=${name}" >> "$GITHUB_OUTPUT"
 
       - name: Render task definition
@@ -199,12 +203,16 @@ jobs:
         shell: bash
         env:
           FAMILY: marsh-orchestrator-${{ matrix.fleet }}-prod
+          CONTAINER_OVERRIDE: ${{ vars.ECS_CONTAINER_NAME }}
         run: |
           set -euo pipefail
           aws ecs describe-task-definition --task-definition "${FAMILY}" --query taskDefinition \
             | jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             > "${RUNNER_TEMP}/task-definition.json"
-          name="$(jq -r '[.containerDefinitions[] | select(.essential != false)][0].name' "${RUNNER_TEMP}/task-definition.json")"
+          # Naming standard: the main container is "web" unless ECS_CONTAINER_NAME says otherwise.
+          name="${CONTAINER_OVERRIDE:-web}"
+          jq -e --arg n "${name}" '.containerDefinitions | any(.name == $n)' "${RUNNER_TEMP}/task-definition.json" > /dev/null \
+            || { echo "::error::Task definition ${FAMILY} has no container named ${name}"; exit 1; }
           echo "container=${name}" >> "$GITHUB_OUTPUT"
 
       - name: Render task definition
