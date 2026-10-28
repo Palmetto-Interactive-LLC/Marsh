@@ -17,10 +17,10 @@ jobs:
     permissions:
       contents: write
       id-token: write
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@c4a43edadc39d41c18eec5f9d4a4313478b9c098 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@d7c8077f09cfeffc3cf660081c9499c0911826c5 # v1
     with:
       app: marsh
       cluster: pi-platform-prod
+      has-staging: false # no staging environment: a merge builds the image only; prod ships through Create Release
       images: '[{"name":"orchestrator","dockerfile":"orchestrator/Dockerfile","context":"."}]'
       services: '["marsh-orchestrator-meridian7","marsh-orchestrator-oppintell","marsh-orchestrator-quarry","marsh-orchestrator-palmetto"]'
-      environments: '["prod"]'

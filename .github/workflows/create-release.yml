@@ -1,0 +1,40 @@
+# Palmetto production release. Manual only: Actions, Create Release, Run workflow, branch main.
+# Runs the heavy gates (full test suite, dependency audit, secret history scan, workflow lint,
+# release-gate-command), checks the ECR scan of the image staging runs, cuts the tag vYYYY.MM.DD.N and the GitHub Release, and deploys that same digest to prod with the migration. To roll back instead, fill rollback_to.
+# Keep the workflow name exactly "Create Release" and the trigger workflow_dispatch only.
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_to:
+        description: "Leave empty to release the head of main. To roll back instead: a release tag (vYYYY.MM.DD.N) or full commit SHA on main."
+        required: false
+        default: ""
+      rollback_env:
+        description: "Environment to roll back (used only with rollback_to)."
+        type: choice
+        options: [staging, prod]
+        default: prod
+
+permissions: {}
+
+jobs:
+  release:
+    permissions:
+      contents: write # the release tag and GitHub Release
+      id-token: write # OIDC to the ECR and ECS deploy roles (unused when deploy is false)
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-release.yml@d7c8077f09cfeffc3cf660081c9499c0911826c5 # v1
+    with:
+      app: marsh
+      cluster: pi-platform-prod
+      has-staging: false # no staging environment: a merge builds the image only; prod ships through Create Release
+      images: '[{"name":"orchestrator","dockerfile":"orchestrator/Dockerfile","context":"."}]'
+      services: '["marsh-orchestrator-meridian7","marsh-orchestrator-oppintell","marsh-orchestrator-quarry","marsh-orchestrator-palmetto"]'
+      stack: python
+      # Marsh's own gate (shell, JSON, TOML, Python and Terraform checks).
+      install-command: python -m pip install --requirement orchestrator/requirements.txt
+      lint-command: make verify
+      typecheck-command: "-"
+      test-command: "-"
+      build-command: "-"
