@@ -34,7 +34,16 @@ restore() { # <name> <local-dir>
   fi
   mkdir -p "$dir"
   if [ -f "$tgz" ]; then
-    tar -xzf "$tgz" -C "$dir" 2>/dev/null && echo "cache-restore: hit ${name}" || echo "cache-restore: bad ${name}"
+    if tar -xzf "$tgz" -C "$dir" 2>/dev/null; then
+      echo "cache-restore: hit ${name}"
+    else
+      # A failed extract leaves truncated files, and cache-save.sh would upload
+      # them again after the job, so the cache never heals. A pi-platform Go
+      # module cache stayed broken this way (rtnetlink, 2026-10-27). Start empty.
+      echo "cache-restore: bad ${name}, discarded"
+      chmod -R u+w "$dir" 2>/dev/null
+      rm -rf "$dir" && mkdir -p "$dir"
+    fi
   else
     echo "cache-restore: miss ${name}"
   fi
