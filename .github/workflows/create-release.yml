@@ -7,6 +7,18 @@ name: Create Release
 on:
   workflow_dispatch:
     inputs:
+      sha:
+        description: "Optional full commit SHA on main to release. Empty releases the head of main. The commit's already-built staging image is what ships."
+        required: false
+        default: ""
+      requested_by:
+        description: "Optional free text: who asked for this release (the Slack release button fills it in)."
+        required: false
+        default: ""
+      dry_run:
+        description: "Run only the heavy gates and the ECR scan of the image. No tag, no deploy."
+        type: boolean
+        default: false
       rollback_to:
         description: "Leave empty to release the head of main. To roll back instead: a release tag (vYYYY.MM.DD.N) or full commit SHA on main."
         required: false
@@ -24,7 +36,7 @@ jobs:
     permissions:
       contents: write # the release tag and GitHub Release
       id-token: write # OIDC to the ECR and ECS deploy roles (unused when deploy is false)
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-release.yml@d7c8077f09cfeffc3cf660081c9499c0911826c5 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-release.yml@0339360e73891ba021302779ec2a1035dc7750f8 # v1
     with:
       app: marsh
       cluster: pi-platform-prod
