@@ -12,6 +12,13 @@ implementable now; the remaining OPP-524 scope (pre-token BuildKit source-cache
 boundary, fd-sealed JIT handoff, exact-host JIT broker) is gated on OPP-525 and
 on an explicit Marsh deployment-authority grant -- see that issue.
 
+### Added
+
+- `orchestrator/ecs_entrypoint.py`: container entrypoint shim that writes the fleet
+  profile (`MARSH_RUNNERS_TOML`) and GitHub App key (`MARSH_GITHUB_APP_PEM`) to
+  0600 files for platforms that can't mount files, such as ECS on EC2. A no-op
+  when neither variable is set. See `docs/ECS-FILE-SHIM.md`.
+
 ### Fixed
 
 - A sandbox create that failed (a provider capacity refusal such as Daytona's
