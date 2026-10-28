@@ -32,14 +32,7 @@
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "marsh-verify" },
-          { "context": "build-test" },
-          { "context": "lint" },
-          { "context": "secrets-scan" },
-          { "context": "sast" },
-          { "context": "deps-scan" },
-          { "context": "iac-scan" },
-          { "context": "actions-lint" }
+          { "context": "pi-checks / pi-checks" }
         ]
       }
     }

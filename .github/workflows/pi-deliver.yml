@@ -1,0 +1,26 @@
+name: PI Deliver
+
+# ADR 0014: Marsh orchestrators run on ECS (cluster pi-platform-prod), one single-task
+# service per fleet, family and service "marsh-orchestrator-<fleet>-prod". Prod only.
+# INERT until repo variable ECS_DEPLOY_ENABLED == 'true'. Also needs the repo variables
+# PI_PLATFORM_IMAGE_PUSH_ROLE_ARN and ECS_DEPLOY_ROLE_ARN.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  deliver:
+    permissions:
+      contents: write
+      id-token: write
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-deliver.yml@a39c6b8e56e9339ddcbb964409be3dfc3b43e928 # v1
+    with:
+      app: marsh
+      cluster: pi-platform-prod
+      images: '[{"name":"orchestrator","dockerfile":"orchestrator/Dockerfile","context":"."}]'
+      services: '["marsh-orchestrator-meridian7","marsh-orchestrator-oppintell","marsh-orchestrator-quarry","marsh-orchestrator-palmetto"]'
+      environments: '["prod"]'
