@@ -17,6 +17,7 @@ jobs:
       contents: read
     uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@a39c6b8e56e9339ddcbb964409be3dfc3b43e928 # v1
     with:
+      runner-small: '["ubuntu-latest"]'
       stack: python
       # Marsh's own gate (shell, JSON, TOML, Python and Terraform checks).
       install-command: python -m pip install --requirement orchestrator/requirements.txt
