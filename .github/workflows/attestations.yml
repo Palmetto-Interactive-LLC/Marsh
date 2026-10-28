@@ -18,7 +18,7 @@ jobs:
   attest-public-repo-only:
     name: "Attestations PUBLIC-REPO-ONLY"
     if: github.event.repository.private == false
-    runs-on: [self-hosted, daytona]
+    runs-on: ubuntu-24.04-arm
     permissions:
       attestations: write
       contents: read

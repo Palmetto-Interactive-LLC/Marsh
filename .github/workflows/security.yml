@@ -1,10 +1,10 @@
 name: Security
 
 # Secrets, dependency and workflow linting run in pi-checks. This workflow keeps the
-# extra static analysis (Semgrep, Trivy, Checkov) and OpenSSF Scorecard.
+# extra static analysis (Semgrep, Trivy, Checkov) and OpenSSF Scorecard. These run on
+# main and weekly, not on every PR, to keep Actions minutes down.
 
 on:
-  pull_request:
   push:
     branches: [main]
   schedule:
@@ -26,7 +26,7 @@ env:
 jobs:
   sast:
     name: sast
-    runs-on: [self-hosted, daytona]
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:
@@ -70,7 +70,7 @@ jobs:
 
   iac-scan:
     name: iac-scan
-    runs-on: [self-hosted, daytona]
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     steps:
@@ -84,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/trivy" "$GITHUB_WORKSPACE/reports"
-          artifact="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          artifact="trivy_${TRIVY_VERSION}_Linux-ARM64.tar.gz"
           base_url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
           curl -fsSLo "$RUNNER_TEMP/$artifact" "$base_url/$artifact"
           curl -fsSLo "$RUNNER_TEMP/trivy_checksums.txt" "$base_url/trivy_${TRIVY_VERSION}_checksums.txt"
@@ -136,7 +136,7 @@ jobs:
 
   scorecard:
     name: scorecard
-    runs-on: [self-hosted, daytona]
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       checks: read

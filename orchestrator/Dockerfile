@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# Marsh orchestrator image. Built for linux/arm64 (buildx + QEMU on the Marsh
-# runners) and run on Graviton ECS hosts. Config, secrets and the GitHub App key
+# Marsh orchestrator image. Built for linux/arm64 (native buildx on the GitHub-hosted
+# ubuntu-24.04-arm runner, no QEMU) and run on Graviton ECS hosts. Config, secrets and the GitHub App key
 # arrive at run time (MARSH_RUNNER_CONFIG, DAYTONA_API_KEY, GH_APP_*); none are baked in.
 FROM python:3.12-slim-bookworm
 
