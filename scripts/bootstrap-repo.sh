@@ -331,7 +331,7 @@ Repository bootstrap summary
 - Merge settings set to delete branches on merge and squash-only.
 
 Human-only follow-up
-- Confirm required workflow job names exist: marsh-verify, build-test, lint, secrets-scan, sast, deps-scan, iac-scan, actions-lint.
+- Confirm required workflow job names exist: "pi-checks / pi-checks" (the thin pi-checks caller; job id must be pi-checks).
 - Add environment secrets or variables such as AWS role ARNs after AWS OIDC roles exist.
 - Enable Codex automatic review or configure CLAUDE_CODE_OAUTH_TOKEN for the committed AI-review workflow.
 - Configure commit signing before applying signed-commit rulesets to active work.
