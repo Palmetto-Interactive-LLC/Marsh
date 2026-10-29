@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Marsh orchestrator image. Built for linux/arm64 (native buildx on the org
 # CodeBuild ARM runner, no QEMU) and run on Graviton ECS hosts. Config, secrets and the GitHub App key
 # arrive at run time (MARSH_RUNNER_CONFIG, DAYTONA_API_KEY, GH_APP_*); none are baked in.
