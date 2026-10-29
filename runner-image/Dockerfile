@@ -11,7 +11,7 @@
 # Registered as two sized snapshots off this one image:
 #   daytona snapshot create marsh-runner-default -f runner-image/Dockerfile -c . --cpu 2 --memory 4 --disk 10
 #   daytona snapshot create marsh-runner-large   -f runner-image/Dockerfile -c . --cpu 4 --memory 8 --disk 10
-FROM daytonaio/sandbox:0.9.0
+FROM 490600801675.dkr.ecr.us-east-1.amazonaws.com/mirror/daytona-sandbox:0.9.0-20261028-bf6394ea@sha256:bf6394ea1fb0504886ec14efe1e00fedd0fd2c1a9cf05b2976a0487425cdee54
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
