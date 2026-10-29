@@ -36,7 +36,7 @@ jobs:
     permissions:
       contents: write # the release tag and GitHub Release
       id-token: write # OIDC to the ECR and ECS deploy roles (unused when deploy is false)
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-release.yml@bf0fe41b30f1b2b24508b84648e5b3d527177bf5 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-release.yml@dc18197051d605b2a0644922f7798acd2349e776 # v1
     with:
       app: marsh
       cluster: pi-platform-prod
