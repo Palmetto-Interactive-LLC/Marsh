@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Marsh runner - universal GitHub Actions self-hosted runner for Daytona sandboxes.
 #
 # Base (daytonaio/sandbox) already ships git, gh, node 20, claude-code — do NOT

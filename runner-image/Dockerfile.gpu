@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Marsh GPU runner - GitHub Actions self-hosted runner for Daytona GPU-class
 # sandboxes. Sibling of runner-image/Dockerfile; every non-GPU-specific line
 # below is copied from that file on purpose so the two images present an
