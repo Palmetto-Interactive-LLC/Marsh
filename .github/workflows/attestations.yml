@@ -18,7 +18,7 @@ jobs:
   attest-public-repo-only:
     name: "Attestations PUBLIC-REPO-ONLY"
     if: github.event.repository.private == false
-    runs-on: ubuntu-24.04-arm
+    runs-on: codebuild-pi-actions-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       attestations: write
       contents: read
