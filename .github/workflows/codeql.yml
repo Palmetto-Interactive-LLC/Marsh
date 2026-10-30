@@ -8,8 +8,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "41 7 * * 2"
   workflow_dispatch:
 
 permissions: {}
