@@ -1,0 +1,27 @@
+name: Deliver
+
+# Marsh has no staging: a merge builds and pushes the image only. Prod ships through Release.
+# Inert until the Depot CI variable ECS_DEPLOY_ENABLED is "true".
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  deliver:
+    permissions:
+      contents: write
+      id-token: write
+    uses: Palmetto-Interactive-LLC/.github/.depot/workflows/deliver.yml@c5ff085d1f6981e7a3ab9b5cf4f0548e516a0c2d
+    with:
+      app: marsh
+      cluster: pi-platform-prod
+      mode: staging
+      has-staging: false
+      images: '[{"name":"orchestrator","dockerfile":"orchestrator/Dockerfile","context":"."}]'
+      services: '["marsh-orchestrator-meridian7","marsh-orchestrator-oppintell","marsh-orchestrator-quarry","marsh-orchestrator-palmetto"]'
+      deploy-enabled: ${{ vars.ECS_DEPLOY_ENABLED }}
+      push-role-arn: ${{ vars.PI_PLATFORM_IMAGE_PUSH_ROLE_ARN }}
+      deploy-role-arn: ${{ vars.ECS_DEPLOY_ROLE_ARN }}
+      serving-secrets: ${{ vars.ECS_SERVING_SECRETS }}
