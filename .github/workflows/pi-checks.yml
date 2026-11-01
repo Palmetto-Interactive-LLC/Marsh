@@ -1,0 +1,24 @@
+name: PI Checks
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: pi-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pi-checks:
+    permissions:
+      contents: read
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@82f5c5986308a54515d3afaed607a2b043ef8f7b # v1
+    with:
+      stack: python
+      # Marsh's own gate (shell, JSON, TOML, Python and Terraform checks).
+      install-command: python -m pip install --requirement orchestrator/requirements.txt
+      lint-command: make verify
+      typecheck-command: "-"
+      test-command: "-"
+      build-command: "-"
