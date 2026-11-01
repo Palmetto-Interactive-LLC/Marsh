@@ -13,7 +13,7 @@ jobs:
   pi-checks:
     permissions:
       contents: read
-    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@dc18197051d605b2a0644922f7798acd2349e776 # v1
+    uses: Palmetto-Interactive-LLC/.github/.github/workflows/pi-checks.yml@82f5c5986308a54515d3afaed607a2b043ef8f7b # v1
     with:
       stack: python
       # Marsh's own gate (shell, JSON, TOML, Python and Terraform checks).
